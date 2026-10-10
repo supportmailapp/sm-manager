@@ -11,7 +11,7 @@ The manager is **bot-agnostic on purpose**. It only understands six structural o
 - Generations and rollouts: generation tagging, readiness gating, and a live `DEPLOY` op that rolls the fleet to a new generation cluster-by-cluster in configurable batches (`deployBatchSize`). Routing flips per batch only after the new clusters are ready and before the old ones are quiesced, so there is no duplicate-routing window.
 - Public statuspage WebSocket (`internal/status/`, separate from the Unix socket): snapshot plus health/status deltas, API-key gate, per-IP handshake rate-limiting and connection caps, real client IP resolved from `CF-Connecting-IP` behind Cloudflare and nginx.
 
-Still stubbed: the real per-consumer API key system for the status WebSocket (today a flat allow-list).
+The status WebSocket currently authenticates with a flat API-key allow-list from config (no per-consumer keys, revocation or scopes yet).
 
 ## Documentation
 
