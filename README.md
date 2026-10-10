@@ -1,24 +1,30 @@
 # sm-manager
 
-> Internal / not public yet. This documents the manager for us while it's being built.
+Go process supervisor and IPC hub for the SupportMail sharding system. It supervises cluster processes (each hosting several discord.js gateway shards), routes messages between clusters and clients (the API) over a Unix socket, drives zero-downtime cluster-by-cluster rollouts, and hosts the public statuspage WebSocket.
 
-Go process supervisor + IPC hub for the SupportMail sharding system. It supervises cluster processes (each hosting several discord.js gateway shards), routes messages between clusters and clients (the API) over a Unix socket, and — later — drives zero-downtime soft restarts and the public statuspage WebSocket.
+The manager is **bot-agnostic on purpose**. It only understands six structural ops (`REGISTER`, `HEARTBEAT`, `QUIESCE`, `QUIESCED`, `DEPLOY`, `GET_CLUSTER_STATUSES`) plus a config-supplied allow-list of business-op names, which it forwards without ever parsing the payload. A second bot is a different config, not a code change. See [`PROTOCOL.md`](PROTOCOL.md) for the wire contract.
 
-The manager is **bot-agnostic on purpose**. It only understands four structural ops; everything bot-specific is either config or lives in the cluster/API. A second bot is a different config, not a code change. See `../sharding-rewrite-plan.md` for the full plan and `PROTOCOL.md` for the wire contract.
+## Features
 
-## Current Status
+- Unix-socket hub: cluster registry, structural-op handling, business-op allow-list gate, request/response correlation, computed guild/shard to cluster routing.
+- Process supervision: spawns cluster processes, injects the env contract, restarts crashed clusters with exponential backoff.
+- Generations and rollouts: generation tagging, readiness gating, and a live `DEPLOY` op that rolls the fleet to a new generation cluster-by-cluster in configurable batches (`deployBatchSize`). Routing flips per batch only after the new clusters are ready and before the old ones are quiesced, so there is no duplicate-routing window.
+- Public statuspage WebSocket (`internal/status/`, separate from the Unix socket): snapshot plus health/status deltas, API-key gate, per-IP handshake rate-limiting and connection caps, real client IP resolved from `CF-Connecting-IP` behind Cloudflare and nginx.
 
-**Phase 1 done** (manager + bot sides — socket listener, registry, structural/business routing, allowed-op gate, process supervision with crash-restart, computed guild/shard→cluster routing; remaining Phase 1 work is API-side).  
-**Phase 3 landed**: generation tagging, readiness gating, and a live `DEPLOY` control op that rolls the fleet to a new generation **cluster-by-cluster in configurable batches** (`deployBatchSize`), flipping routing per-batch only after the new clusters are ready and before quiescing the old ones — so no duplicate-routing window. Bot side drains for real on `QUIESCE`.  
-**Phase 4 manager-half done**: `DEPLOY` is also the "manager control op" Phase 4 needed — the `sm-api`/dashboard side of wiring it up is separate work in another repo.  
-**Phase 5 landed**: internet-facing statuspage WebSocket (`internal/status/`, separate from the Unix socket) streaming snapshot + health/status deltas, with a stub API-key gate **and** rate-limiting (per-IP handshake token bucket + per-IP/global connection caps, real client IP resolved from `CF-Connecting-IP` behind Cloudflare+nginx). Still stubbed: the real per-consumer key system.
+Still stubbed: the real per-consumer API key system for the status WebSocket (today a flat allow-list).
 
 ## Documentation
 
-- [**How the transport works**](docs/content/transport.md) — Unix socket, message framing, request/response correlation, target routing
-- [**Process supervision**](docs/content/supervision.md) — environment contract, crash handling
-- [**Generations, readiness gating, and DEPLOY (Phase 3)**](docs/content/generations.md) — generation tagging, readiness gating, live cluster-by-cluster rollouts, known gaps
-- [**Two tiers of ops**](docs/content/ops.md) — structural vs. business ops, validation boundaries
-- [**Public statuspage WebSocket (Phase 5)**](docs/content/status-ws.md) — trust boundary, real client IP resolution, rate-limit knobs
-- [**Configuration and running**](docs/content/configuration.md) — config keys and overrides, getting started
-- [**Layout and project status**](docs/content/layout.md) — source tree organization, phases yet to build
+Also published at [manager.docs.supportmail.dev](https://manager.docs.supportmail.dev).
+
+- [**How the transport works**](docs/content/transport.md): Unix socket, message framing, request/response correlation, target routing
+- [**Process supervision**](docs/content/supervision.md): environment contract, crash handling
+- [**Generations, readiness gating, and DEPLOY**](docs/content/generations.md): generation tagging, readiness gating, live cluster-by-cluster rollouts, known gaps
+- [**Two tiers of ops**](docs/content/ops.md): structural vs. business ops, validation boundaries
+- [**Public statuspage WebSocket**](docs/content/status-ws.md): trust boundary, real client IP resolution, rate-limit knobs
+- [**Configuration and running**](docs/content/configuration.md): config keys and overrides, getting started
+- [**Layout and project status**](docs/content/layout.md): source tree organization, remaining work
+
+## License
+
+Licensed under the [GNU Affero General Public License v3.0](LICENSE) (AGPL-3.0). You may use, modify, and self-host it. If you distribute a modified version, or let users interact with one over a network, you must make your modified source available under the same license.
