@@ -1,0 +1,30 @@
+{
+  "socketPath": "/tmp/sm-manager.sock",
+  "spawnCommand": ["bun", "run", "--env-file=.env.production", "src/cluster.ts"],
+  "spawnDir": "../bot",
+  "shardsPerCluster": 2,
+  "clusterCount": 1,
+  "heartbeatTimeoutSecs": 30,
+  "deployTimeoutSecs": 120,
+  "deployBatchSize": 1,
+  "statusWsAddr": ":4000",
+  "statusApiKeys": ["replace-me-before-prod"],
+  "statusRealIpHeader": "CF-Connecting-IP",
+  "statusTrustedProxies": ["127.0.0.1/32", "::1/128"],
+  "statusHandshakeRatePerMin": 60,
+  "statusMaxConnsPerIp": 20,
+  "statusMaxConns": 5000,
+  "sentryDsn": "",
+  "sentryEnvironment": "production",
+  "allowedBusinessOps": [
+    "VERIFY_GUILD_MEMBERSHIP",
+    "GET_GUILD_USERS",
+    "CHECK_MENTION_PERMISSIONS",
+    "SETUP_TICKETS",
+    "GET_FORUM_TAGS",
+    "SET_FORUM_TAGS",
+    "GET_GUILD_LIST",
+    "SYNC_GUILDS_WITH_DB",
+    "HANDLE_DM_REPORT"
+  ]
+}

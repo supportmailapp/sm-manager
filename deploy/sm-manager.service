@@ -1,0 +1,17 @@
+[Unit]
+Description=SupportMail manager (supervisor + IPC hub + status WS)
+After=network-online.target mongod.service
+Wants=network-online.target mongod.service
+
+[Service]
+Type=simple
+User=suppmail
+WorkingDirectory=/home/suppmail/smmanager
+ExecStart=/home/suppmail/smmanager/sm-manager
+Restart=always
+RestartSec=3
+# spawned bot clusters inherit this process env — add any bot-required vars here
+# (sm-manager also injects CLUSTER_ID/SHARD_LIST/TOTAL_SHARDS/GENERATION/SM_MANAGER_SOCKET per child)
+
+[Install]
+WantedBy=multi-user.target

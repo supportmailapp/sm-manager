@@ -1,0 +1,16 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "sm-manager-docs",
+  "compatibility_date": "2026-07-21",
+  "workers_dev": false,
+  "route": {
+    "custom_domain": true,
+    "pattern": "manager.docs.supportmail.dev",
+  },
+  "build": {
+    "command": "pnpm run build",
+  },
+  "assets": {
+    "directory": ".vitepress/dist",
+  },
+}

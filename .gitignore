@@ -1,0 +1,9 @@
+# local config + runtime socket
+config.json
+.env
+*.sock
+
+# go build output
+/sm-manager
+/sm-manager.exe
+/dist/
