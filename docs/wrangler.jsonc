@@ -13,4 +13,7 @@
   "assets": {
     "directory": ".vitepress/dist",
   },
+  "cache": {
+    "enabled": true,
+  },
 }
