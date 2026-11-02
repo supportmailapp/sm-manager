@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Go process supervisor + IPC hub for the SupportMail sharding system. It spawns and babysits cluster processes (each hosting several discord.js gateway shards), routes messages between clusters and clients (the API) over a Unix socket, drives zero-downtime cluster-by-cluster rollouts, and hosts the public statuspage WebSocket. It is **bot-agnostic by design**: it only understands a fixed set of structural ops and a config-supplied allow-list of business-op *names*; it never parses business-op payloads. A second bot is a different `config.json`, not a code change.
 
-This is one of several independent repos in the SupportMail sharding rewrite (see `../CLAUDE.md` at the workspace root for how it relates to `sm-api`, `orbit`, and the legacy `v2` hub it's replacing). `PROTOCOL.md` in this repo is the wire contract, hand-copied (not codegen'd) into `sm-manager`, `v2`/`supportmail` (`cluster.ts`), and `sm-api` — when it changes, update all three in the same sitting.
+This is one of several independent repos of the SupportMail stack (see `../CLAUDE.md` at the workspace root for how it relates to `sm-api`, `orbit`, and the `v2` bot whose clusters it spawns). `PROTOCOL.md` in this repo is the wire contract, hand-copied (not codegen'd) into `sm-manager`, `v2`/`supportmail` (`cluster.ts`), and `sm-api` — when it changes, update all three in the same sitting.
 
 ## Commands
 
