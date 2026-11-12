@@ -50,3 +50,5 @@ When a client (e.g. the API) sends a business op, the manager records `pending[i
 3. `target.guildId` — mapped to a shard with Discord's gateway formula `(guildID >> 22) % totalShards`, then that shard → cluster as above.
 
 A target that resolves to no connected cluster is rejected to the sender with `{ok:false, error}`.
+
+A `target.guildId` that is in the instance exception register (guild id to instance id) is routed to that instance before any shard arithmetic. If the instance is not connected, the sender gets `{ok:false, error:"instance offline"}` and the request never falls back to a cluster.

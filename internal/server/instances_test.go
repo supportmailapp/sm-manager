@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"sm-manager/internal/config"
 	"sm-manager/internal/protocol"
 	"sm-manager/internal/status"
 )
@@ -203,5 +204,120 @@ func TestSetInstanceStateUnknownIsNoop(t *testing.T) {
 	h.SetInstanceState("wl_nope", status.InstanceFailed, 1)
 	if len(h.instances) != 0 {
 		t.Fatal("SetInstanceState created an entry")
+	}
+}
+
+// routingHub builds a hub with cluster 0 registered (1 cluster, 1 shard) and
+// returns it with the cluster's fakeConn.
+func routingHub(t *testing.T) (*Hub, *fakeConn) {
+	t.Helper()
+	h := NewHub(&config.Config{
+		AllowedBusinessOps:   []string{"GET_GUILD_LIST"},
+		ShardsPerCluster:     1,
+		ClusterCount:         1,
+		HeartbeatTimeoutSecs: 30,
+	})
+	fc := &fakeConn{}
+	c := h.newConn(fc)
+	h.handleFrame(c, mustMarshal(protocol.ShardRequest{ID: "r0", Op: protocol.OpRegister, Payload: json.RawMessage(`{"clusterId":0,"shards":[0]}`)}))
+	return h, fc
+}
+
+func sendGuildRequest(t *testing.T, h *Hub, guildID string) *fakeConn {
+	t.Helper()
+	fc := &fakeConn{}
+	requester := h.newConn(fc)
+	h.handleFrame(requester, mustMarshal(protocol.ShardRequest{
+		ID:      "q1",
+		Op:      protocol.OpCode("GET_GUILD_LIST"),
+		Target:  &protocol.Target{GuildId: &guildID},
+		Payload: json.RawMessage(`{}`),
+	}))
+	return fc
+}
+
+func frameCount(f *fakeConn) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.frames)
+}
+
+func TestGuildInRegisterRoutesToInstance(t *testing.T) {
+	h, clusterConn := routingHub(t)
+	const guild = "111111111111111111"
+	addInstance(h, "wl_a", guild)
+	_, instConn := registerInstance(t, h, "wl_a", 1)
+	clusterBefore, instBefore := frameCount(clusterConn), frameCount(instConn)
+
+	sendGuildRequest(t, h, guild)
+
+	if got := frameCount(instConn); got != instBefore+1 {
+		t.Fatalf("instance got %d new frames, want 1", got-instBefore)
+	}
+	var req protocol.ShardRequest
+	if err := json.Unmarshal(instConn.last(), &req); err != nil || req.ID != "q1" {
+		t.Fatalf("instance last frame not the request: %s (%v)", instConn.last(), err)
+	}
+	if got := frameCount(clusterConn); got != clusterBefore {
+		t.Fatalf("cluster received %d frames for an instance guild", got-clusterBefore)
+	}
+}
+
+func TestGuildInRegisterNeverFallsBackToCluster(t *testing.T) {
+	h, clusterConn := routingHub(t)
+	const guild = "111111111111111111"
+	addInstance(h, "wl_a", guild) // never registered: no conn
+	clusterBefore := frameCount(clusterConn)
+
+	requester := sendGuildRequest(t, h, guild)
+
+	resp := decodeResp(t, requester.last())
+	if resp.ID != "q1" || resp.OK || resp.Error != "instance offline" {
+		t.Fatalf("want ok:false instance offline, got %+v", resp)
+	}
+	if got := frameCount(clusterConn); got != clusterBefore {
+		t.Fatalf("cluster received %d frames; must never fall back", got-clusterBefore)
+	}
+	if len(h.pending) != 0 {
+		t.Fatalf("pending entry leaked: %v", h.pending)
+	}
+}
+
+func TestInstanceDisconnectedAfterRegisterAnswersOffline(t *testing.T) {
+	h, clusterConn := routingHub(t)
+	const guild = "111111111111111111"
+	addInstance(h, "wl_a", guild)
+	ic, _ := registerInstance(t, h, "wl_a", 1)
+	h.removeConn(ic)
+	clusterBefore := frameCount(clusterConn)
+
+	requester := sendGuildRequest(t, h, guild)
+
+	if resp := decodeResp(t, requester.last()); resp.OK || resp.Error != "instance offline" {
+		t.Fatalf("want instance offline, got %+v", resp)
+	}
+	if got := frameCount(clusterConn); got != clusterBefore {
+		t.Fatal("cluster received a frame for an offline instance guild")
+	}
+}
+
+func TestOtherGuildUsesShardArithmetic(t *testing.T) {
+	h, clusterConn := routingHub(t)
+	addInstance(h, "wl_a", "111111111111111111")
+	registerInstance(t, h, "wl_a", 1)
+	clusterBefore := frameCount(clusterConn)
+
+	sendGuildRequest(t, h, "222222222222222222")
+
+	if got := frameCount(clusterConn); got != clusterBefore+1 {
+		t.Fatalf("cluster got %d new frames, want 1", got-clusterBefore)
+	}
+}
+
+func TestUnroutableTargetKeepsClusterError(t *testing.T) {
+	h, _ := routingHub(t)
+	requester := sendGuildRequest(t, h, "not-a-snowflake")
+	if resp := decodeResp(t, requester.last()); resp.OK || resp.Error != "no cluster for target" {
+		t.Fatalf("want no cluster for target, got %+v", resp)
 	}
 }

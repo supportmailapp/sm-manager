@@ -167,13 +167,13 @@ func TestResolveTargetByGuildAndShard(t *testing.T) {
 
 	// shard 3 → cluster 1
 	shard := 3
-	if got := h.resolveTarget(&protocol.Target{ShardId: &shard}); got != c1 {
+	if got, _ := h.resolveTarget(&protocol.Target{ShardId: &shard}); got != c1 {
 		t.Fatalf("shard 3 resolved to wrong cluster")
 	}
 
 	// guild → shard → cluster; pick a guild that lands on a shard owned by c0.
 	guild := "0" // (0 >> 22) % 4 = shard 0 → cluster 0
-	if got := h.resolveTarget(&protocol.Target{GuildId: &guild}); got != c0 {
+	if got, _ := h.resolveTarget(&protocol.Target{GuildId: &guild}); got != c0 {
 		t.Fatalf("guild 0 should route to cluster 0")
 	}
 }
@@ -421,14 +421,14 @@ func TestRegisterDoesNotStealActiveRouting(t *testing.T) {
 
 	old := h.newConn(&fakeConn{})
 	h.handleFrame(old, mustMarshal(protocol.ShardRequest{ID: "r0", Op: protocol.OpRegister, Payload: json.RawMessage(`{"clusterId":0,"shards":[0],"generation":1}`)}))
-	if got := h.resolveTarget(&protocol.Target{ClusterId: &cid}); got != old {
+	if got, _ := h.resolveTarget(&protocol.Target{ClusterId: &cid}); got != old {
 		t.Fatal("gen 1 should hold active routing after cold registration")
 	}
 
 	// New generation registers — must not steal routing yet.
 	fresh := h.newConn(&fakeConn{})
 	h.handleFrame(fresh, mustMarshal(protocol.ShardRequest{ID: "r1", Op: protocol.OpRegister, Payload: json.RawMessage(`{"clusterId":0,"shards":[0],"generation":2}`)}))
-	if got := h.resolveTarget(&protocol.Target{ClusterId: &cid}); got != old {
+	if got, _ := h.resolveTarget(&protocol.Target{ClusterId: &cid}); got != old {
 		t.Fatal("gen 2 register stole active routing before cutover — duplicate-routing window")
 	}
 	if h.generations[2][0] != fresh {
@@ -437,7 +437,7 @@ func TestRegisterDoesNotStealActiveRouting(t *testing.T) {
 
 	// Cutover flips routing atomically.
 	h.PromoteClusters(2, []int{0})
-	if got := h.resolveTarget(&protocol.Target{ClusterId: &cid}); got != fresh {
+	if got, _ := h.resolveTarget(&protocol.Target{ClusterId: &cid}); got != fresh {
 		t.Fatal("PromoteClusters did not flip routing to gen 2")
 	}
 }
@@ -454,7 +454,7 @@ func TestRegisterRefillsEmptySlotOnCrashRestart(t *testing.T) {
 
 	second := h.newConn(&fakeConn{})
 	h.handleFrame(second, mustMarshal(protocol.ShardRequest{ID: "r1", Op: protocol.OpRegister, Payload: json.RawMessage(`{"clusterId":0,"shards":[0],"generation":1}`)}))
-	if got := h.resolveTarget(&protocol.Target{ClusterId: &cid}); got != second {
+	if got, _ := h.resolveTarget(&protocol.Target{ClusterId: &cid}); got != second {
 		t.Fatal("respawned cluster did not reclaim the empty routing slot")
 	}
 }

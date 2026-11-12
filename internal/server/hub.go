@@ -481,9 +481,9 @@ func (h *Hub) handleBusiness(c *Conn, op protocol.OpCode, raw []byte) {
 		return
 	}
 
-	target := h.resolveTarget(req.Target)
-	if target == nil {
-		_ = c.send(protocol.ShardResponse{ID: req.ID, OK: false, Error: "no cluster for target"})
+	target, err := h.resolveTarget(req.Target)
+	if err != nil {
+		_ = c.send(protocol.ShardResponse{ID: req.ID, OK: false, Error: err.Error()})
 		return
 	}
 
@@ -504,28 +504,56 @@ func (h *Hub) handleBusiness(c *Conn, op protocol.OpCode, raw []byte) {
 		sentry.WithAttributes(attribute.String("op", string(op))))
 }
 
-// resolveTarget picks the destination cluster for a business op, in priority
-// order: explicit clusterId, then explicit shardId, then a guildId mapped to a
-// shard via Discord's sharding formula. The shard→cluster step is computed from
-// topology (shardsPerCluster) — no stored shard table.
-func (h *Hub) resolveTarget(t *protocol.Target) *Conn {
+// errNoClusterForTarget and errInstanceOffline are the two routing failures a
+// requester can see. Their text is part of the wire contract.
+var (
+	errNoClusterForTarget = errors.New("no cluster for target")
+	errInstanceOffline    = errors.New("instance offline")
+)
+
+// resolveTarget picks the destination for a business op, in priority order:
+// explicit clusterId, then explicit shardId, then a guildId. A guildId in the
+// exception register goes to its instance; if that instance is not connected
+// the result is errInstanceOffline and the request never falls back to a
+// cluster. Any other guildId is mapped to a shard via Discord's sharding
+// formula. The shard→cluster step is computed from topology (shardsPerCluster);
+// there is no stored shard table.
+func (h *Hub) resolveTarget(t *protocol.Target) (*Conn, error) {
 	if t == nil {
-		return nil
+		return nil, errNoClusterForTarget
 	}
+	var conn *Conn
 	switch {
 	case t.ClusterId != nil:
-		return h.clusterConn(*t.ClusterId)
+		conn = h.clusterConn(*t.ClusterId)
 	case t.ShardId != nil:
-		return h.clusterForShard(*t.ShardId)
+		conn = h.clusterForShard(*t.ShardId)
 	case t.GuildId != nil:
+		h.mu.RLock()
+		instID, registered := h.guildInstance[*t.GuildId]
+		var instConn *Conn
+		if registered {
+			if inst := h.instances[instID]; inst != nil {
+				instConn = inst.conn
+			}
+		}
+		h.mu.RUnlock()
+		if registered {
+			if instConn == nil {
+				return nil, errInstanceOffline
+			}
+			return instConn, nil
+		}
 		shard, ok := shardForGuild(*t.GuildId, h.cfg.TotalShards())
 		if !ok {
-			return nil
+			return nil, errNoClusterForTarget
 		}
-		return h.clusterForShard(shard)
-	default:
-		return nil
+		conn = h.clusterForShard(shard)
 	}
+	if conn == nil {
+		return nil, errNoClusterForTarget
+	}
+	return conn, nil
 }
 
 func (h *Hub) clusterConn(clusterID int) *Conn {
