@@ -85,8 +85,11 @@ func TestHandshakeRateDisabled(t *testing.T) {
 func TestConnCaps(t *testing.T) {
 	l := newLimiter(Limits{MaxConnsPerIP: 2, MaxConns: 3})
 
-	if !l.acquire("a") || !l.acquire("a") {
-		t.Fatal("first two per-IP acquires should succeed")
+	if !l.acquire("a") {
+		t.Fatal("first per-IP acquire should succeed")
+	}
+	if !l.acquire("a") {
+		t.Fatal("second per-IP acquire should succeed")
 	}
 	if l.acquire("a") {
 		t.Fatal("third from same IP exceeds per-IP cap")
