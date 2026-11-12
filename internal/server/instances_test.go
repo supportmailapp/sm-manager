@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"sync"
 	"testing"
 	"time"
 
@@ -319,5 +320,507 @@ func TestUnroutableTargetKeepsClusterError(t *testing.T) {
 	requester := sendGuildRequest(t, h, "not-a-snowflake")
 	if resp := decodeResp(t, requester.last()); resp.OK || resp.Error != "no cluster for target" {
 		t.Fatalf("want no cluster for target, got %+v", resp)
+	}
+}
+
+// fakeRunner records runner calls. Like the real supervisor it reports state
+// changes back to the hub.
+type fakeRunner struct {
+	h *Hub
+
+	mu       sync.Mutex
+	starts   []string
+	stops    []string
+	startErr error
+	stopGate chan struct{} // when set, StopInstance blocks until it is closed
+
+	inFlight map[string]int
+	overlap  bool
+}
+
+func newFakeRunner(h *Hub) *fakeRunner {
+	return &fakeRunner{h: h, inFlight: map[string]int{}}
+}
+
+func (f *fakeRunner) enter(id string) {
+	f.mu.Lock()
+	f.inFlight[id]++
+	if f.inFlight[id] > 1 {
+		f.overlap = true
+	}
+	f.mu.Unlock()
+}
+
+func (f *fakeRunner) leave(id string) {
+	f.mu.Lock()
+	f.inFlight[id]--
+	f.mu.Unlock()
+}
+
+func (f *fakeRunner) StartInstance(id string) error {
+	f.enter(id)
+	defer f.leave(id)
+	f.mu.Lock()
+	f.starts = append(f.starts, id)
+	err := f.startErr
+	f.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	f.h.SetInstanceState(id, status.InstanceStarting, 0)
+	return nil
+}
+
+func (f *fakeRunner) StopInstance(id string) {
+	f.enter(id)
+	defer f.leave(id)
+	f.mu.Lock()
+	f.stops = append(f.stops, id)
+	gate := f.stopGate
+	f.mu.Unlock()
+	if gate != nil {
+		<-gate
+	}
+	f.h.SetInstanceState(id, status.InstanceStopped, 0)
+}
+
+func (f *fakeRunner) startCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.starts)
+}
+
+func (f *fakeRunner) stopCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.stops)
+}
+
+func (f *fakeRunner) startedIDs() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.starts...)
+}
+
+// opHub is a testHub with a fakeRunner wired in.
+func opHub() (*Hub, *fakeRunner) {
+	h := testHub()
+	r := newFakeRunner(h)
+	h.SetInstanceRunner(r)
+	return h, r
+}
+
+// opCall sends an instance op from a fresh client conn and waits for its reply.
+func opCall(t *testing.T, h *Hub, op protocol.OpCode, payload string) protocol.ShardResponse {
+	t.Helper()
+	fc := &fakeConn{}
+	c := h.newConn(fc)
+	sendFrame(t, h, c, "op1", op, payload)
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if raw := fc.last(); raw != nil {
+			return decodeResp(t, raw)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Fatalf("no reply to %s", op)
+	return protocol.ShardResponse{}
+}
+
+func instanceState(h *Hub, id string) (InstanceInfo, bool) {
+	for _, i := range h.snapshotInstances() {
+		if i.InstanceID == id {
+			return i, true
+		}
+	}
+	return InstanceInfo{}, false
+}
+
+func TestStartInstanceRegistersGuilds(t *testing.T) {
+	h, r := opHub()
+
+	resp := opCall(t, h, protocol.OpStartInstance, `{"instanceId":"wl_a","guildIds":["111","222"]}`)
+
+	if !resp.OK {
+		t.Fatalf("not ok: %+v", resp)
+	}
+	var info InstanceInfo
+	if err := json.Unmarshal(resp.Data, &info); err != nil || info.InstanceID != "wl_a" || info.State != status.InstanceStarting {
+		t.Fatalf("bad reply data %s (%v)", resp.Data, err)
+	}
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	if h.guildInstance["111"] != "wl_a" || h.guildInstance["222"] != "wl_a" {
+		t.Fatalf("guild mapping = %v", h.guildInstance)
+	}
+	if r.startCount() != 1 {
+		t.Fatalf("runner starts = %d, want 1", r.startCount())
+	}
+}
+
+func TestStartInstanceIdempotent(t *testing.T) {
+	h, r := opHub()
+	opCall(t, h, protocol.OpStartInstance, `{"instanceId":"wl_a","guildIds":["111"]}`)
+	h.SetInstanceState("wl_a", status.InstanceRunning, 0)
+
+	resp := opCall(t, h, protocol.OpStartInstance, `{"instanceId":"wl_a","guildIds":["111"]}`)
+
+	if !resp.OK {
+		t.Fatalf("not ok: %+v", resp)
+	}
+	if r.startCount() != 1 {
+		t.Fatalf("runner starts = %d, want 1", r.startCount())
+	}
+}
+
+func TestStartInstanceClearsFailed(t *testing.T) {
+	h, r := opHub()
+	addInstance(h, "wl_a", "111")
+	h.SetInstanceState("wl_a", status.InstanceFailed, 78)
+
+	resp := opCall(t, h, protocol.OpStartInstance, `{"instanceId":"wl_a","guildIds":["111"]}`)
+
+	if !resp.OK || r.startCount() != 1 {
+		t.Fatalf("resp %+v, starts %d", resp, r.startCount())
+	}
+	if got, _ := instanceState(h, "wl_a"); got.State != status.InstanceStarting {
+		t.Fatalf("state = %s", got.State)
+	}
+}
+
+func TestStartInstanceGuildConflict(t *testing.T) {
+	h, r := opHub()
+	addInstance(h, "wl_a", "111")
+
+	resp := opCall(t, h, protocol.OpStartInstance, `{"instanceId":"wl_b","guildIds":["111"]}`)
+
+	if resp.OK || resp.Error == "" {
+		t.Fatalf("want error, got %+v", resp)
+	}
+	if _, ok := instanceState(h, "wl_b"); ok {
+		t.Fatal("conflicting instance was registered")
+	}
+	if h.guildInstance["111"] != "wl_a" || r.startCount() != 0 {
+		t.Fatalf("mapping %v, starts %d", h.guildInstance, r.startCount())
+	}
+}
+
+func TestStartInstanceRunnerErrorRollsBackNewEntry(t *testing.T) {
+	h, r := opHub()
+	r.startErr = errBoom
+
+	resp := opCall(t, h, protocol.OpStartInstance, `{"instanceId":"wl_a","guildIds":["111"]}`)
+
+	if resp.OK || resp.Error != "boom" {
+		t.Fatalf("want error boom, got %+v", resp)
+	}
+	if len(h.instances) != 0 || len(h.guildInstance) != 0 {
+		t.Fatalf("entry not rolled back: %v %v", h.instances, h.guildInstance)
+	}
+}
+
+func TestStopInstanceKeepsMapping(t *testing.T) {
+	h, r := opHub()
+	opCall(t, h, protocol.OpStartInstance, `{"instanceId":"wl_a","guildIds":["111"]}`)
+
+	resp := opCall(t, h, protocol.OpStopInstance, `{"instanceId":"wl_a"}`)
+
+	if !resp.OK {
+		t.Fatalf("not ok: %+v", resp)
+	}
+	if r.stopCount() != 1 {
+		t.Fatalf("runner stops = %d", r.stopCount())
+	}
+	if h.guildInstance["111"] != "wl_a" {
+		t.Fatal("stop dropped the mapping")
+	}
+	got, ok := instanceState(h, "wl_a")
+	if !ok || got.State != status.InstanceStopped {
+		t.Fatalf("state = %+v ok=%v", got, ok)
+	}
+	var info InstanceInfo
+	if err := json.Unmarshal(resp.Data, &info); err != nil || info.State != status.InstanceStopped {
+		t.Fatalf("reply data %s (%v)", resp.Data, err)
+	}
+}
+
+func TestStopUnknownInstanceIsOkNull(t *testing.T) {
+	h, r := opHub()
+
+	resp := opCall(t, h, protocol.OpStopInstance, `{"instanceId":"wl_nope"}`)
+
+	if !resp.OK || string(resp.Data) != "null" {
+		t.Fatalf("want ok data=null, got %+v", resp)
+	}
+	if r.stopCount() != 0 {
+		t.Fatal("runner called for unknown instance")
+	}
+}
+
+func TestRemoveInstanceDropsMapping(t *testing.T) {
+	h, clusterConn := routingHub(t)
+	runner := newFakeRunner(h)
+	h.SetInstanceRunner(runner)
+	const guild = "111111111111111111"
+	opCall(t, h, protocol.OpStartInstance, `{"instanceId":"wl_a","guildIds":["`+guild+`"]}`)
+
+	resp := opCall(t, h, protocol.OpRemoveInstance, `{"instanceId":"wl_a"}`)
+
+	if !resp.OK || string(resp.Data) != "null" {
+		t.Fatalf("want ok data=null, got %+v", resp)
+	}
+	if runner.stopCount() != 1 {
+		t.Fatalf("runner stops = %d", runner.stopCount())
+	}
+	if len(h.instances) != 0 || len(h.guildInstance) != 0 {
+		t.Fatalf("not dropped: %v %v", h.instances, h.guildInstance)
+	}
+	// With the mapping gone the guild routes by shard arithmetic again.
+	before := frameCount(clusterConn)
+	sendGuildRequest(t, h, guild)
+	if frameCount(clusterConn) != before+1 {
+		t.Fatal("guild request did not reach the cluster after removal")
+	}
+}
+
+func TestRemoveUnknownInstanceIsOkNull(t *testing.T) {
+	h, _ := opHub()
+	resp := opCall(t, h, protocol.OpRemoveInstance, `{"instanceId":"wl_nope"}`)
+	if !resp.OK || string(resp.Data) != "null" {
+		t.Fatalf("want ok data=null, got %+v", resp)
+	}
+}
+
+func TestRestartUnknownInstance(t *testing.T) {
+	h, r := opHub()
+
+	resp := opCall(t, h, protocol.OpRestartInstance, `{"instanceId":"wl_nope"}`)
+
+	if resp.OK || resp.Error != "unknown instance" {
+		t.Fatalf("want unknown instance, got %+v", resp)
+	}
+	if r.startCount() != 0 || r.stopCount() != 0 {
+		t.Fatal("runner called")
+	}
+}
+
+func TestRestartStopsThenStarts(t *testing.T) {
+	h, r := opHub()
+	opCall(t, h, protocol.OpStartInstance, `{"instanceId":"wl_a","guildIds":["111"]}`)
+	h.SetInstanceState("wl_a", status.InstanceRunning, 0)
+
+	resp := opCall(t, h, protocol.OpRestartInstance, `{"instanceId":"wl_a"}`)
+
+	if !resp.OK {
+		t.Fatalf("not ok: %+v", resp)
+	}
+	if r.stopCount() != 1 || r.startCount() != 2 {
+		t.Fatalf("stops %d starts %d, want 1 and 2", r.stopCount(), r.startCount())
+	}
+	if got, _ := instanceState(h, "wl_a"); got.State != status.InstanceStarting {
+		t.Fatalf("state = %s", got.State)
+	}
+}
+
+func TestSyncStartsStoppedButNotFailed(t *testing.T) {
+	h, r := opHub()
+	addInstance(h, "wl_failed", "900")
+	h.SetInstanceState("wl_failed", status.InstanceFailed, 78)
+
+	resp := opCall(t, h, protocol.OpSyncInstances, `{"instances":[`+
+		`{"instanceId":"wl_failed","guildIds":["900"],"run":true},`+
+		`{"instanceId":"wl_new","guildIds":["901"],"run":true},`+
+		`{"instanceId":"wl_off","guildIds":["902","903"],"run":false}]}`)
+
+	if !resp.OK {
+		t.Fatalf("not ok: %+v", resp)
+	}
+	if got := r.startedIDs(); len(got) != 1 || got[0] != "wl_new" {
+		t.Fatalf("started = %v, want only wl_new", got)
+	}
+	var infos []InstanceInfo
+	if err := json.Unmarshal(resp.Data, &infos); err != nil || len(infos) != 3 {
+		t.Fatalf("reply data %s (%v)", resp.Data, err)
+	}
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	for g, want := range map[string]string{"900": "wl_failed", "901": "wl_new", "902": "wl_off", "903": "wl_off"} {
+		if h.guildInstance[g] != want {
+			t.Fatalf("guildInstance[%s] = %q, want %q", g, h.guildInstance[g], want)
+		}
+	}
+	if h.instances["wl_failed"].state != status.InstanceFailed {
+		t.Fatal("failed instance was touched")
+	}
+	if h.instances["wl_off"].state != status.InstanceStopped {
+		t.Fatalf("wl_off state = %s", h.instances["wl_off"].state)
+	}
+}
+
+func TestSyncRunFalseStopsRunning(t *testing.T) {
+	h, r := opHub()
+	addInstance(h, "wl_a", "111")
+	h.SetInstanceState("wl_a", status.InstanceRunning, 0)
+
+	resp := opCall(t, h, protocol.OpSyncInstances, `{"instances":[{"instanceId":"wl_a","guildIds":["111"],"run":false}]}`)
+
+	if !resp.OK || r.stopCount() != 1 || r.startCount() != 0 {
+		t.Fatalf("resp %+v stops %d starts %d", resp, r.stopCount(), r.startCount())
+	}
+}
+
+func TestSyncRemovesUnlisted(t *testing.T) {
+	h, r := opHub()
+	addInstance(h, "wl_old", "111")
+	h.SetInstanceState("wl_old", status.InstanceRunning, 0)
+
+	resp := opCall(t, h, protocol.OpSyncInstances, `{"instances":[]}`)
+
+	if !resp.OK || string(resp.Data) != "[]" {
+		t.Fatalf("resp %+v", resp)
+	}
+	if r.stopCount() != 1 {
+		t.Fatalf("runner stops = %d", r.stopCount())
+	}
+	if len(h.instances) != 0 || len(h.guildInstance) != 0 {
+		t.Fatalf("not removed: %v %v", h.instances, h.guildInstance)
+	}
+}
+
+func TestSyncRejectsGuildListedTwice(t *testing.T) {
+	h, r := opHub()
+
+	resp := opCall(t, h, protocol.OpSyncInstances, `{"instances":[`+
+		`{"instanceId":"wl_a","guildIds":["111"],"run":true},`+
+		`{"instanceId":"wl_b","guildIds":["111"],"run":true}]}`)
+
+	if resp.OK {
+		t.Fatalf("want error, got %+v", resp)
+	}
+	if len(h.instances) != 0 || r.startCount() != 0 {
+		t.Fatal("invalid sync had side effects")
+	}
+}
+
+func TestSyncMovesGuildBetweenListedInstances(t *testing.T) {
+	h, _ := opHub()
+	addInstance(h, "wl_a", "111")
+	h.SetInstanceState("wl_a", status.InstanceStopped, 0)
+
+	resp := opCall(t, h, protocol.OpSyncInstances, `{"instances":[`+
+		`{"instanceId":"wl_b","guildIds":["111"],"run":false},`+
+		`{"instanceId":"wl_a","guildIds":["222"],"run":false}]}`)
+
+	if !resp.OK {
+		t.Fatalf("not ok: %+v", resp)
+	}
+	if h.guildInstance["111"] != "wl_b" || h.guildInstance["222"] != "wl_a" {
+		t.Fatalf("mapping = %v", h.guildInstance)
+	}
+}
+
+func TestGetInstanceStatusesReplies(t *testing.T) {
+	h, _ := opHub()
+	addInstance(h, "wl_a", "111")
+
+	resp := opCall(t, h, protocol.OpGetInstanceStatuses, `{}`)
+
+	var infos []InstanceInfo
+	if !resp.OK || json.Unmarshal(resp.Data, &infos) != nil || len(infos) != 1 || infos[0].InstanceID != "wl_a" {
+		t.Fatalf("resp %+v", resp)
+	}
+}
+
+func TestGetInstanceStatusesEmptyIsArray(t *testing.T) {
+	h := testHub() // no runner needed
+	resp := opCall(t, h, protocol.OpGetInstanceStatuses, `{}`)
+	if !resp.OK || string(resp.Data) != "[]" {
+		t.Fatalf("resp %+v", resp)
+	}
+}
+
+func TestInstanceOpWithoutRunner(t *testing.T) {
+	h := testHub()
+
+	resp := opCall(t, h, protocol.OpStartInstance, `{"instanceId":"wl_a","guildIds":["111"]}`)
+
+	if resp.OK || resp.Error != "no instance runner configured" {
+		t.Fatalf("want no instance runner configured, got %+v", resp)
+	}
+	if len(h.instances) != 0 {
+		t.Fatal("entry registered without a runner")
+	}
+}
+
+func TestInstanceOpMalformedPayload(t *testing.T) {
+	h, _ := opHub()
+	resp := opCall(t, h, protocol.OpStartInstance, `{"guildIds":["111"]}`)
+	if resp.OK {
+		t.Fatalf("missing instanceId must fail: %+v", resp)
+	}
+	resp = opCall(t, h, protocol.OpStopInstance, `"not an object"`)
+	if resp.OK {
+		t.Fatalf("bad json must fail: %+v", resp)
+	}
+}
+
+// A slow stop must not block the caller's read loop.
+func TestInstanceOpDoesNotBlockReadLoop(t *testing.T) {
+	h, r := opHub()
+	addInstance(h, "wl_a", "111")
+	h.SetInstanceState("wl_a", status.InstanceRunning, 0)
+	r.stopGate = make(chan struct{})
+
+	fc := &fakeConn{}
+	c := h.newConn(fc)
+	done := make(chan struct{})
+	go func() {
+		sendFrame(t, h, c, "s", protocol.OpStopInstance, `{"instanceId":"wl_a"}`)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handleFrame blocked on a slow stop")
+	}
+	if fc.last() != nil {
+		t.Fatal("reply sent before the stop finished")
+	}
+	close(r.stopGate)
+	deadline := time.Now().Add(2 * time.Second)
+	for fc.last() == nil && time.Now().Before(deadline) {
+		time.Sleep(2 * time.Millisecond)
+	}
+	if resp := decodeResp(t, fc.last()); !resp.OK {
+		t.Fatalf("not ok: %+v", resp)
+	}
+}
+
+// Concurrent ops on one id must never reach the runner at the same time.
+func TestInstanceOpsSerializedPerInstance(t *testing.T) {
+	h, r := opHub()
+	addInstance(h, "wl_a", "111")
+	h.SetInstanceState("wl_a", status.InstanceRunning, 0)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			op := protocol.OpStopInstance
+			payload := `{"instanceId":"wl_a"}`
+			if i%2 == 0 {
+				op = protocol.OpStartInstance
+				payload = `{"instanceId":"wl_a","guildIds":["111"]}`
+			}
+			opCall(t, h, op, payload)
+		}(i)
+	}
+	wg.Wait()
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.overlap {
+		t.Fatal("runner saw concurrent calls for one instance")
 	}
 }

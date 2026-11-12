@@ -95,6 +95,8 @@ func main() {
 	// before returning so their shutdown is clean.
 	sup := supervisor.New(cfg, srv.Hub())
 	srv.Hub().SetDeployer(sup) // wire before Serve starts accepting DEPLOY requests
+	srv.Hub().SetInstanceRunner(sup)
+	sup.SetInstanceStateSink(srv.Hub())
 	supDone := make(chan struct{})
 	go func() {
 		defer recoverAndReport()

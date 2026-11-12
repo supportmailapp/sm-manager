@@ -272,6 +272,10 @@ func (h *Hub) handleStructural(c *Conn, op protocol.OpCode, raw []byte) {
 		_ = c.send(protocol.ShardResponse{ID: req.ID, OK: false, Error: "QUIESCE is manager-originated"})
 	case protocol.OpDeploy:
 		h.handleDeploy(c, &req)
+	case protocol.OpStartInstance, protocol.OpStopInstance, protocol.OpRestartInstance,
+		protocol.OpRemoveInstance, protocol.OpSyncInstances, protocol.OpGetInstanceStatuses:
+		// Own goroutine: a stop waits out the grace period and must not block the read loop.
+		go h.handleInstanceOp(c, op, &req)
 	case protocol.OpGetClusterStatuses:
 		h.handleGetClusterStatuses(c, &req)
 	}
