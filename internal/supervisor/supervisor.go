@@ -53,6 +53,8 @@ type Supervisor struct {
 	generation     int
 	runCtx         context.Context
 	clusterCancels map[clusterKey]context.CancelFunc // per-running-cluster cancel func
+	instances      map[string]*instanceRun           // supervised instance processes, by instance id
+	instanceSink   InstanceStateSink                 // nil until wired; nil-safe
 
 	deployMu sync.Mutex // serializes concurrent Deploy calls
 	wg       sync.WaitGroup
@@ -64,6 +66,7 @@ func New(cfg *config.Config, hub *server.Hub) *Supervisor {
 		hub:            hub,
 		generation:     cfg.Generation,
 		clusterCancels: make(map[clusterKey]context.CancelFunc),
+		instances:      make(map[string]*instanceRun),
 	}
 }
 
@@ -72,15 +75,19 @@ func New(cfg *config.Config, hub *server.Hub) *Supervisor {
 // exponential backoff. It blocks until every cluster goroutine — across every
 // generation Deploy has ever spawned — has exited.
 func (s *Supervisor) Run(ctx context.Context) {
-	if len(s.cfg.SpawnCommand) == 0 {
-		log.Printf("supervisor: no spawnCommand configured — not spawning any clusters")
-		return
-	}
-
 	s.mu.Lock()
 	s.runCtx = ctx
 	gen := s.generation
 	s.mu.Unlock()
+
+	if len(s.cfg.SpawnCommand) == 0 {
+		// No clusters, but instances may still be started: stay up until
+		// shutdown and wait for them to stop.
+		log.Printf("supervisor: no spawnCommand configured, not spawning any clusters")
+		<-ctx.Done()
+		s.wg.Wait()
+		return
+	}
 
 	s.spawnClusters(gen, clusterIDs(s.cfg.ClusterCount))
 	s.wg.Wait()
@@ -347,7 +354,11 @@ type logWriter struct {
 }
 
 func newLogWriter(clusterID int, stream string) *logWriter {
-	return &logWriter{prefix: fmt.Sprintf("[cluster %d %s] ", clusterID, stream)}
+	return newPrefixLogWriter(fmt.Sprintf("[cluster %d %s] ", clusterID, stream))
+}
+
+func newPrefixLogWriter(prefix string) *logWriter {
+	return &logWriter{prefix: prefix}
 }
 
 func (w *logWriter) Write(p []byte) (int, error) {
