@@ -41,20 +41,25 @@ var Wire = json.JoinOptions(
 // back to defaults: member names are case-sensitive, repeated members and
 // invalid UTF-8 are errors, and so are members the Config struct does not
 // know (which is also how a wrong-case name such as "SocketPath" is caught).
-// A null where a number is expected is rejected as well, rather than
-// resetting the number to zero.
+// A null is rejected for every field type Config has (int, string, []string)
+// instead of resetting the field to its zero value over the default.
 var Config = json.JoinOptions(
 	json.RejectUnknownMembers(true),
-	json.WithUnmarshalers(rejectNullNumber()),
+	json.WithUnmarshalers(json.JoinUnmarshalers(
+		rejectNull[int]("a number"),
+		rejectNull[string]("a string"),
+		rejectNull[[]string]("a list of strings"),
+	)),
 )
 
-// rejectNullNumber fails on a JSON null for an int. Anything else falls
-// through to the default decoding.
-func rejectNullNumber() *json.Unmarshalers {
-	return json.UnmarshalFromFunc(func(dec *jsontext.Decoder, _ *int) error {
+// rejectNull fails on a JSON null for a value of type T. Anything else falls
+// through to the default decoding. Add a line to Config when Config gains a
+// field of a type not listed there.
+func rejectNull[T any](what string) *json.Unmarshalers {
+	return json.UnmarshalFromFunc(func(dec *jsontext.Decoder, _ *T) error {
 		if dec.PeekKind() != 'n' {
 			return errors.ErrUnsupported
 		}
-		return errors.New("null is not a number")
+		return errors.New("null is not " + what)
 	})
 }

@@ -105,6 +105,11 @@ func TestConfigStrictParsing(t *testing.T) {
 		{"duplicate key", `{"clusterCount":2,"clusterCount":3}`, "clusterCount"},
 		{"null for a number", `{"heartbeatTimeoutSecs":null}`, "heartbeatTimeoutSecs"},
 		{"null for a number among others", `{"socketPath":"/x.sock","clusterCount":null}`, "clusterCount"},
+		{"null for a string", `{"statusRealIpHeader":null}`, "statusRealIpHeader"},
+		{"null for the required string", `{"socketPath":null}`, "socketPath"},
+		{"null for a string list", `{"statusTrustedProxies":null}`, "statusTrustedProxies"},
+		{"null for an empty-default string list", `{"spawnCommand":null}`, "spawnCommand"},
+		{"null inside a string list", `{"allowedBusinessOps":["A",null]}`, "allowedBusinessOps"},
 		{"invalid UTF-8", "{\"spawnDir\":\"a\xffb\"}", "spawnDir"},
 	}
 	for _, tc := range cases {
@@ -156,5 +161,22 @@ func TestWireGoldenConfigRejects(t *testing.T) {
 				t.Fatalf("accepted %q as %+v", content, cfg)
 			}
 		})
+	}
+}
+
+// Every field type Config uses must have a null rejector in wirejson.Config.
+// This fails when a field of another type (bool, int64, map, struct, ...) is
+// added, as a reminder to extend the rejectors and the strict-parsing cases.
+func TestConfigFieldTypesAreCoveredByNullRejectors(t *testing.T) {
+	covered := map[reflect.Kind]bool{reflect.Int: true, reflect.String: true}
+	rt := reflect.TypeOf(Config{})
+	for i := 0; i < rt.NumField(); i++ {
+		f := rt.Field(i)
+		switch {
+		case covered[f.Type.Kind()]:
+		case f.Type == reflect.TypeOf([]string(nil)):
+		default:
+			t.Errorf("field %s has type %s with no null rejector", f.Name, f.Type)
+		}
 	}
 }
