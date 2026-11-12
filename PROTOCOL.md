@@ -32,6 +32,12 @@ This split is what keeps `sm-manager` reusable across bots:
 | `QUIESCED`                  | structural | cluster → manager       | Ack for `QUIESCE`                                                                                                                                 |
 | `DEPLOY`                    | structural | any → manager           | Trigger a generation rollout (spawn new gen, await readiness, quiesce old gen); replies `{ok, data:{generation}}` once cutover completes or fails |
 | `GET_CLUSTER_STATUSES`      | structural | client → manager        | Snapshot of every active cluster's state; replies `{ok, data:[]ClusterState}`. Manager reads its own registry, no target (sm-api's stats job)     |
+| `START_INSTANCE`            | structural | client → manager        | Register an instance and its guild ids, start its process; replies `InstanceInfo`. Idempotent when running; error if a guild id maps to another instance; clears `failed` |
+| `STOP_INSTANCE`             | structural | client → manager        | SIGTERM, then SIGKILL after the grace period; replies `InstanceInfo` or `null` after exit. Keeps the mapping; unknown id is ok |
+| `RESTART_INSTANCE`          | structural | client → manager        | Stop, then start under the current generation; replies `InstanceInfo`. Error `unknown instance` if never started or synced |
+| `REMOVE_INSTANCE`           | structural | client → manager        | Stop if needed, then drop the registry entry and its guild mappings; replies `null`. Unknown id is ok |
+| `SYNC_INSTANCES`            | structural | client → manager        | Full desired instance list; replies `InstanceInfo[]`. Absent entries are stopped and removed; see Instance ops |
+| `GET_INSTANCE_STATUSES`     | structural | client → manager        | Snapshot of the instance registry; replies `InstanceInfo[]`. Instances never appear in `GET_CLUSTER_STATUSES` |
 | `VERIFY_GUILD_MEMBERSHIP`   | business   | any → manager → cluster |                                                                                                                                                   |
 | `GET_GUILD_USERS`           | business   | any → manager → cluster |                                                                                                                                                   |
 | `CHECK_MENTION_PERMISSIONS` | business   | any → manager → cluster |                                                                                                                                                   |
@@ -41,8 +47,30 @@ This split is what keeps `sm-manager` reusable across bots:
 | `GET_GUILD_LIST`            | business   | any → manager → cluster |                                                                                                                                                   |
 | `SYNC_GUILDS_WITH_DB`       | business   | any → manager → cluster |                                                                                                                                                   |
 | `HANDLE_DM_REPORT`          | business   | api → manager → cluster | Apply a DM-report action (or resync its log message) on the cluster owning the support guild |
+| `REFRESH_WHITELABEL_GUILDS` | business   | api → manager → cluster | Reload the whitelabel guild set on the cluster owning the guild; payload `{ guildId }`, replies `{ whitelabel: boolean }` (whether the guild is in the cluster's set after the reload) |
+| `CLOSE_ALL_TICKETS`         | business   | api → manager → cluster | Close every open ticket of a guild; payload `{ guildId }`, replies `{ closed: number, failed: string[] }` (ids of tickets that could not be closed) |
 
 The business rows above are SupportMail-specific. Another bot replaces them wholesale; the structural rows stay fixed.
+
+## Instances
+
+An instance is a separately supervised single-process bot, identified by an opaque `instanceId`. Instances are not clusters: they have their own registry, never appear in `GET_CLUSTER_STATUSES`, and own a set of guild ids (the exception register). The six instance ops are structural: the manager answers them itself, there is no `target`, and the payloads are:
+
+- `START_INSTANCE`: `{ instanceId: string, guildIds: string[] }`, replies `InstanceInfo`.
+- `STOP_INSTANCE`: `{ instanceId: string }`, replies `InstanceInfo` or `null`.
+- `RESTART_INSTANCE`: `{ instanceId: string }`, replies `InstanceInfo`.
+- `REMOVE_INSTANCE`: `{ instanceId: string }`, replies `null`.
+- `SYNC_INSTANCES`: `{ instances: InstanceSyncEntry[] }`, replies `InstanceInfo[]`. The list is the full desired set. Entries absent from the list are stopped and removed. Listed entries are registered. `run: true` starts only an instance that is `stopped` or new, never one that is `failed`. `run: false` stops a running one.
+- `GET_INSTANCE_STATUSES`: `{}`, replies `InstanceInfo[]`.
+
+`REGISTER` and `HEARTBEAT` also come from instances, with these payloads instead of the cluster ones:
+
+- `REGISTER` from an instance: `{ instanceId: string, generation: number }`. Rejected with `unknown instance` if the manager did not start that id.
+- `HEARTBEAT` from an instance: `{ instanceId: string, status?: unknown }`.
+
+### Routing rule
+
+A request whose `target.guildId` is in the exception register goes to that instance. If the instance is not connected, the manager answers `{ ok: false, error: "instance offline" }` and never falls back to a cluster. Any other guild id is routed to the cluster that owns it, as before.
 
 ## TypeScript (`protocol.ts` — `supportmail` and `sm-api`)
 
@@ -54,7 +82,13 @@ export type StructuralOp =
   | "QUIESCE"
   | "QUIESCED"
   | "DEPLOY"
-  | "GET_CLUSTER_STATUSES";
+  | "GET_CLUSTER_STATUSES"
+  | "START_INSTANCE"
+  | "STOP_INSTANCE"
+  | "RESTART_INSTANCE"
+  | "REMOVE_INSTANCE"
+  | "SYNC_INSTANCES"
+  | "GET_INSTANCE_STATUSES";
 
 // Business ops — opaque to the manager. Bot-specific; this is SupportMail's set.
 export type BusinessOp =
@@ -66,7 +100,9 @@ export type BusinessOp =
   | "SET_FORUM_TAGS"
   | "GET_GUILD_LIST"
   | "SYNC_GUILDS_WITH_DB"
-  | "HANDLE_DM_REPORT";
+  | "HANDLE_DM_REPORT"
+  | "REFRESH_WHITELABEL_GUILDS"
+  | "CLOSE_ALL_TICKETS";
 
 export type OpCode = StructuralOp | BusinessOp;
 
@@ -82,6 +118,31 @@ export interface ShardResponse<T = unknown> {
   ok: boolean;
   data?: T;
   error?: string;
+}
+
+// Instance shapes. Mirror `@supportmailapp/shared/protocol` (0.4.0).
+export type InstanceRunState = "stopped" | "starting" | "running" | "failed";
+
+export interface InstanceState {
+  instanceId: string;
+  state: InstanceRunState;
+  generation: number;
+  alive: boolean;
+  lastBeat: number;
+  exitCode?: number;
+  status?: unknown; // opaque, from the instance's HEARTBEAT
+}
+
+// Internal socket only (the public status WebSocket omits guildIds).
+export interface InstanceInfo extends InstanceState {
+  guildIds: string[];
+}
+
+// One entry of the full desired list sent with SYNC_INSTANCES.
+export interface InstanceSyncEntry {
+  instanceId: string;
+  guildIds: string[];
+  run: boolean;
 }
 ```
 
@@ -105,13 +166,23 @@ const (
     OpQuiesced  OpCode = "QUIESCED"
     OpDeploy    OpCode = "DEPLOY"
     OpGetClusterStatuses OpCode = "GET_CLUSTER_STATUSES"
+
+    // Instance ops: manager-answered ops that drive the instance registry.
+    OpStartInstance       OpCode = "START_INSTANCE"
+    OpStopInstance        OpCode = "STOP_INSTANCE"
+    OpRestartInstance     OpCode = "RESTART_INSTANCE"
+    OpRemoveInstance      OpCode = "REMOVE_INSTANCE"
+    OpSyncInstances       OpCode = "SYNC_INSTANCES"
+    OpGetInstanceStatuses OpCode = "GET_INSTANCE_STATUSES"
 )
 
 // IsStructural reports whether the manager should handle this op itself.
 // If false, the message is routed to the target cluster untouched.
 func IsStructural(op OpCode) bool {
     switch op {
-    case OpRegister, OpHeartbeat, OpQuiesce, OpQuiesced, OpDeploy, OpGetClusterStatuses:
+    case OpRegister, OpHeartbeat, OpQuiesce, OpQuiesced, OpDeploy, OpGetClusterStatuses,
+        OpStartInstance, OpStopInstance, OpRestartInstance, OpRemoveInstance,
+        OpSyncInstances, OpGetInstanceStatuses:
         return true
     default:
         return false

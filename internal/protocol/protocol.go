@@ -22,13 +22,25 @@ const (
 	// `{ok, data:[]ClusterState}`. A plain client (sm-api's scheduled stats job)
 	// sits behind this so it can read fleet-wide guild/member counts.
 	OpGetClusterStatuses OpCode = "GET_CLUSTER_STATUSES"
+
+	// Instance ops: manager-answered ops that drive the instance registry, a set
+	// of separately supervised single-process bots that are not clusters. Sent by
+	// plain clients; replies carry the instance state. See PROTOCOL.md.
+	OpStartInstance       OpCode = "START_INSTANCE"
+	OpStopInstance        OpCode = "STOP_INSTANCE"
+	OpRestartInstance     OpCode = "RESTART_INSTANCE"
+	OpRemoveInstance      OpCode = "REMOVE_INSTANCE"
+	OpSyncInstances       OpCode = "SYNC_INSTANCES"
+	OpGetInstanceStatuses OpCode = "GET_INSTANCE_STATUSES"
 )
 
 // IsStructural reports whether the manager should handle this op itself.
 // If false, the message is routed to the target cluster untouched.
 func IsStructural(op OpCode) bool {
 	switch op {
-	case OpRegister, OpHeartbeat, OpQuiesce, OpQuiesced, OpDeploy, OpGetClusterStatuses:
+	case OpRegister, OpHeartbeat, OpQuiesce, OpQuiesced, OpDeploy, OpGetClusterStatuses,
+		OpStartInstance, OpStopInstance, OpRestartInstance, OpRemoveInstance,
+		OpSyncInstances, OpGetInstanceStatuses:
 		return true
 	default:
 		return false
