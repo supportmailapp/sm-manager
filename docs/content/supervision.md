@@ -43,6 +43,18 @@ instead of idling.
 
 Child stdout/stderr is captured and re-logged line-prefixed (`[cluster N out]` / `[cluster N err]`), so interleaved output stays attributable.
 
+## Instances
+
+An instance is a single-process bot started by `START_INSTANCE` or `SYNC_INSTANCES` and supervised individually (`internal/supervisor/instances.go`). It runs `instanceSpawnCommand` in `spawnDir`, never the cluster `spawnCommand`. The env contract has no cluster id or shard list:
+
+| Env var             | Example        | Meaning                                                              |
+| ------------------- | -------------- | -------------------------------------------------------------------- |
+| `INSTANCE_ID`       | `wl_0123...`   | The opaque id the manager knows this instance by                      |
+| `SM_MANAGER_SOCKET` | `/tmp/...sock` | Socket path to connect back to (= `socketPath`)                       |
+| `GENERATION`        | `0`            | Current generation, echoed back in the instance's `REGISTER` payload |
+
+An instance that exits is restarted with the same backoff as a cluster, except when it exits with `instanceNoRestartExitCode` (default `78`): it is then marked `failed` and left alone until `START_INSTANCE` or `RESTART_INSTANCE`. A stop sends SIGTERM and kills the process after `instanceStopGraceSecs`.
+
 ## Crash handling
 
 `cmd.Wait()` returns on any exit (crash or clean). The child is restarted with **exponential backoff** — `1s`, doubling to a `30s` cap. A process that stays up past `healthyRuntime` (60s) is treated as healthy and its backoff resets, so a genuine crash loop backs off but an occasional restart doesn't. Because children run under the manager's `ctx` (`CommandContext`), a manager shutdown (SIGINT/SIGTERM) tears down every child; the manager then waits for them before exiting.

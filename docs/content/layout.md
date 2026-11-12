@@ -21,12 +21,12 @@ Standard Go layout: the entrypoint is a thin `package main` under `cmd/`; all re
   supervisor.go               spawn per-cluster (context keyed by (gen,clusterID)), env-contract injection, prefixed log capture, crash backoff, batched Deploy (per batch: spawnClusters → AwaitClusters → PromoteClusters → QuiesceClusters → cancel old)
   supervisor_test.go          batchClusterIDs / clusterIDs splitting
 /internal/status/              public statuspage WebSocket — internet-facing, separate from the Unix socket
-  status.go                   Event/ClusterState wire types, Broadcaster (client fanout + last-known snapshot cache, drops slow clients), Sink interface the hub publishes through
+  status.go                   Event/ClusterState/InstanceState wire types (instances ride in separate `instances` / `instance` / `removedInstance` fields), Broadcaster (client fanout + last-known snapshot cache, drops slow clients), Sink interface the hub publishes through
   server.go                   TCP HTTP server, /ws upgrade (coder/websocket), /healthz, ctx-driven graceful shutdown
   auth.go                     API-key gate (constant-time allowlist; X-API-Key / bearer header, or "key.<value>" WS subprotocol for the browser client) — the check() seam a richer key system slots in behind
   clientip.go                 real-client-IP resolver — trusts CF-Connecting-IP only from a trusted-proxy RemoteAddr (nginx); anti-spoof for per-IP limiting behind Cloudflare+nginx
   ratelimit.go                per-IP handshake token bucket + per-IP/global concurrent-conn caps, idle-bucket sweeper (applied in handleWS around the key check)
-  status_test.go              auth cases, snapshot-then-delta fanout, slow-client drop, end-to-end dial (real server + coder client, auth reject + snapshot + live delta)
+  status_test.go              auth cases, snapshot-then-delta fanout, instance snapshot/delta/removal, slow-client drop, end-to-end dial (real server + coder client, auth reject + snapshot + live delta)
   ratelimit_test.go           trusted-proxy IP resolution + spoof rejection, handshake token bucket (burst/refill/per-IP), conn caps (per-IP + global), idle-bucket sweep
 ```
 

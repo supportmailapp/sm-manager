@@ -3,6 +3,8 @@ package server
 import (
 	"encoding/json/jsontext"
 	"encoding/json/v2"
+	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -824,4 +826,184 @@ func TestInstanceOpsSerializedPerInstance(t *testing.T) {
 	if r.overlap {
 		t.Fatal("runner saw concurrent calls for one instance")
 	}
+}
+
+// Status feed: every instance change reaches the sink, with no guild ids.
+
+func sinkHub() (*Hub, *fakeRunner, *fakeSink) {
+	h, r := opHub()
+	sink := &fakeSink{}
+	h.SetStatusSink(sink)
+	return h, r, sink
+}
+
+func TestInstanceRegisterPublishesState(t *testing.T) {
+	h := testHub()
+	sink := &fakeSink{}
+	h.SetStatusSink(sink)
+	addInstance(h, "wl_a", "111222333444555666")
+
+	registerInstance(t, h, "wl_a", 3)
+
+	got, ok := sink.lastInstPub("wl_a")
+	if !ok {
+		t.Fatal("register did not publish")
+	}
+	if got.State != status.InstanceRunning || got.Generation != 3 || !got.Alive || got.LastBeat == 0 {
+		t.Fatalf("published %+v", got)
+	}
+	raw, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "111222333444555666") || strings.Contains(strings.ToLower(string(raw)), "guild") {
+		t.Fatalf("published state leaks guild ids: %s", raw)
+	}
+}
+
+func TestInstanceHeartbeatPublishesStatus(t *testing.T) {
+	h := testHub()
+	sink := &fakeSink{}
+	h.SetStatusSink(sink)
+	addInstance(h, "wl_a", "111")
+	c, _ := registerInstance(t, h, "wl_a", 1)
+
+	sendFrame(t, h, c, "hb", protocol.OpHeartbeat, `{"status":{"guilds":1}}`)
+
+	got, _ := sink.lastInstPub("wl_a")
+	if string(got.Status) != `{"guilds":1}` {
+		t.Fatalf("published status = %s", got.Status)
+	}
+}
+
+func TestInstanceDisconnectAndReapPublish(t *testing.T) {
+	h := testHub()
+	sink := &fakeSink{}
+	h.SetStatusSink(sink)
+	addInstance(h, "wl_a", "111")
+	c, _ := registerInstance(t, h, "wl_a", 1)
+
+	h.removeConn(c)
+	got, _ := sink.lastInstPub("wl_a")
+	if got.Alive || got.State != status.InstanceStarting {
+		t.Fatalf("disconnect published %+v", got)
+	}
+
+	addInstance(h, "wl_b", "222")
+	registerInstance(t, h, "wl_b", 1)
+	h.mu.Lock()
+	h.instances["wl_b"].lastBeat = h.instances["wl_b"].lastBeat.Add(-time.Hour)
+	h.mu.Unlock()
+	h.reapDead()
+	got, _ = sink.lastInstPub("wl_b")
+	if got.Alive || got.State != status.InstanceStarting {
+		t.Fatalf("reap published %+v", got)
+	}
+}
+
+func TestSetInstanceStatePublishes(t *testing.T) {
+	h := testHub()
+	sink := &fakeSink{}
+	h.SetStatusSink(sink)
+	addInstance(h, "wl_a", "111")
+
+	h.SetInstanceState("wl_a", status.InstanceFailed, 78)
+
+	got, ok := sink.lastInstPub("wl_a")
+	if !ok || got.State != status.InstanceFailed || got.ExitCode != 78 {
+		t.Fatalf("published %+v (ok=%v)", got, ok)
+	}
+	h.SetInstanceState("wl_nope", status.InstanceFailed, 1)
+	if _, ok := sink.lastInstPub("wl_nope"); ok {
+		t.Fatal("unknown id was published")
+	}
+}
+
+func TestStartStopOpsPublish(t *testing.T) {
+	h, _, sink := sinkHub()
+
+	opCall(t, h, protocol.OpStartInstance, `{"instanceId":"wl_a","guildIds":["111"]}`)
+	if got, ok := sink.lastInstPub("wl_a"); !ok || got.State != status.InstanceStarting {
+		t.Fatalf("start published %+v (ok=%v)", got, ok)
+	}
+	opCall(t, h, protocol.OpStopInstance, `{"instanceId":"wl_a"}`)
+	if got, _ := sink.lastInstPub("wl_a"); got.State != status.InstanceStopped {
+		t.Fatalf("stop published %+v", got)
+	}
+}
+
+func TestRemoveInstanceRemovesFromSink(t *testing.T) {
+	h, _, sink := sinkHub()
+	opCall(t, h, protocol.OpStartInstance, `{"instanceId":"wl_a","guildIds":["111"]}`)
+	if sink.instRemoved("wl_a") {
+		t.Fatal("removed before REMOVE_INSTANCE")
+	}
+
+	opCall(t, h, protocol.OpRemoveInstance, `{"instanceId":"wl_a"}`)
+
+	if !sink.instRemoved("wl_a") {
+		t.Fatal("REMOVE_INSTANCE did not reach the sink")
+	}
+}
+
+func TestSyncRemovesStaleFromSink(t *testing.T) {
+	h, _, sink := sinkHub()
+	opCall(t, h, protocol.OpStartInstance, `{"instanceId":"wl_old","guildIds":["111"]}`)
+
+	opCall(t, h, protocol.OpSyncInstances, `{"instances":[{"instanceId":"wl_new","guildIds":["222"],"run":true}]}`)
+
+	if !sink.instRemoved("wl_old") {
+		t.Fatal("stale instance not removed from the sink")
+	}
+	if got, ok := sink.lastInstPub("wl_new"); !ok || got.State != status.InstanceStarting {
+		t.Fatalf("synced instance published %+v (ok=%v)", got, ok)
+	}
+}
+
+func TestStartRollbackRemovesFromSink(t *testing.T) {
+	h, r, sink := sinkHub()
+	r.startErr = errors.New("boom")
+
+	resp := opCall(t, h, protocol.OpStartInstance, `{"instanceId":"wl_a","guildIds":["111"]}`)
+
+	if resp.OK {
+		t.Fatal("expected failure")
+	}
+	if !sink.instRemoved("wl_a") {
+		t.Fatal("rolled-back entry not removed from the sink")
+	}
+}
+
+func TestInstanceHookRunsOutsideHubLock(t *testing.T) {
+	h := testHub()
+	sink := &lockProbeSink{h: h}
+	h.SetStatusSink(sink)
+	addInstance(h, "wl_a", "111")
+
+	registerInstance(t, h, "wl_a", 1)
+	h.SetInstanceState("wl_a", status.InstanceFailed, 1)
+
+	if sink.calls == 0 {
+		t.Fatal("sink never called")
+	}
+	if sink.heldLock {
+		t.Fatal("sink called while h.mu was held")
+	}
+}
+
+// lockProbeSink checks that h.mu can be taken for writing during a call.
+type lockProbeSink struct {
+	fakeSink
+	h        *Hub
+	calls    int
+	heldLock bool
+}
+
+func (s *lockProbeSink) PublishInstance(is status.InstanceState) {
+	s.calls++
+	if !s.h.mu.TryLock() {
+		s.heldLock = true
+		return
+	}
+	s.h.mu.Unlock()
 }

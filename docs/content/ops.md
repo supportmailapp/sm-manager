@@ -7,7 +7,7 @@ sidebar:
 
 This split is the whole reason the manager is reusable — see `PROTOCOL.md` for the authoritative table.
 
-- **Structural ops** — `REGISTER`, `HEARTBEAT`, `QUIESCE`, `QUIESCED`, `DEPLOY`. The only ops the manager acts on. It `switch`es on these to drive registration, liveness, the generation handoff, and rollouts.
+- **Structural ops**: `REGISTER`, `HEARTBEAT`, `QUIESCE`, `QUIESCED`, `DEPLOY`, `GET_CLUSTER_STATUSES`, and the six instance ops `START_INSTANCE`, `STOP_INSTANCE`, `RESTART_INSTANCE`, `REMOVE_INSTANCE`, `SYNC_INSTANCES`, `GET_INSTANCE_STATUSES` (twelve in all). The only ops the manager acts on. It `switch`es on these to drive registration, liveness, the generation handoff, rollouts, and the instance registry. See the Instances section of `PROTOCOL.md`.
 - **Business ops** — everything else (`SETUP_TICKETS`, `GET_FORUM_TAGS`, …). **Opaque** to the manager. It checks the op name against an allow-list, then forwards the frame to the target cluster **without ever decoding the payload**. A different bot supplies a completely different business-op vocabulary with zero manager code changes.
 
 ## Validation split

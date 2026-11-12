@@ -25,6 +25,9 @@ cp config.example.json config.json
 | `generation`                | `SM_GENERATION`                    | `0`                    | Starting epoch for a cold-started manager only — the live value is mutable runtime state on the supervisor, bumped by `DEPLOY`; see Generations, above  |
 | `deployTimeoutSecs`         | `SM_DEPLOY_TIMEOUT_SECS`           | `120`                  | Bounds how long a `DEPLOY` blocks waiting for the new generation to become ready and the old one to quiesce, before giving up                           |
 | `deployBatchSize`           | `SM_DEPLOY_BATCH_SIZE`             | `0`                    | Clusters swapped per rollout batch; `0` or `>= clusterCount` = whole fleet in one batch. `1` = one cluster at a time. See Generations, above            |
+| `instanceSpawnCommand`      | `SM_INSTANCE_SPAWN_COMMAND`        | `[]`                   | Instance process command (binary + args), run in `spawnDir`. Never the cluster `spawnCommand`. Empty = instances cannot be started (the instance ops answer with an error)                                  |
+| `instanceNoRestartExitCode` | `SM_INSTANCE_NO_RESTART_EXIT_CODE` | `78`                   | Exit code with which an instance asks not to be restarted. The instance then becomes `failed` and stays so until `START_INSTANCE` or `RESTART_INSTANCE`; any other exit is restarted with backoff       |
+| `instanceStopGraceSecs`     | `SM_INSTANCE_STOP_GRACE_SECS`      | `12`                   | Seconds a stopping instance gets after SIGTERM before it is killed                                                                                       |
 | `statusWsAddr`              | `SM_STATUS_WS_ADDR`                | — (disabled)           | `host:port` for the public statuspage WebSocket, e.g. `:4000`. Empty disables it. Separate from the internal Unix socket                                |
 | `statusApiKeys`             | `SM_STATUS_API_KEYS`               | `[]` (open)            | API-key allowlist gating the public WS. Empty = open endpoint (dev only, logs a warning). The `check()` seam a richer key system slots in behind        |
 | `statusRealIpHeader`        | `SM_STATUS_REAL_IP_HEADER`         | `CF-Connecting-IP`     | Header carrying the real client IP behind the proxy. Honored only when `RemoteAddr` ∈ `statusTrustedProxies`. Empty = trust no header, use `RemoteAddr` |
@@ -33,7 +36,9 @@ cp config.example.json config.json
 | `statusMaxConnsPerIp`       | `SM_STATUS_MAX_CONNS_PER_IP`       | `20`                   | Max concurrent live WS connections from one client IP. `0` disables                                                                                     |
 | `statusMaxConns`            | `SM_STATUS_MAX_CONNS`              | `5000`                 | Max concurrent live WS connections across all IPs. `0` disables                                                                                         |
 
-`SM_ALLOWED_BUSINESS_OPS`, `SM_STATUS_API_KEYS`, and `SM_STATUS_TRUSTED_PROXIES` are comma-separated. `SM_SPAWN_COMMAND` is space-separated.
+`SM_ALLOWED_BUSINESS_OPS`, `SM_STATUS_API_KEYS`, and `SM_STATUS_TRUSTED_PROXIES` are comma-separated. `SM_SPAWN_COMMAND` and `SM_INSTANCE_SPAWN_COMMAND` are space-separated.
+
+`config.json` parsing is strict: key names are matched exactly (case-sensitive, so `SocketPath` is an error, not `socketPath`), and unknown keys, duplicate keys and `null` values are all rejected at startup instead of silently falling back to a default. A missing key keeps its default.
 
 Nothing bot-specific is compiled in — no payload shapes, no op vocabulary, no paths. `config.json` is gitignored (it's per-environment); `config.example.json` is the checked-in template.
 

@@ -18,7 +18,7 @@ go run ./cmd/sm-manager
 go build -o sm-manager ./cmd/sm-manager
 ```
 
-Single test: `go test ./internal/server -run TestRegisterMarksClusterAlive -v` (swap the package path and test name; `internal/server`, `internal/supervisor`, and `internal/status` all have tests, `internal/protocol`/`internal/telemetry` don't).
+Single test: `go test ./internal/server -run TestRegisterMarksClusterAlive -v` (swap the package path and test name; `internal/server`, `internal/supervisor`, `internal/status`, `internal/protocol` and `internal/config` all have tests, `internal/telemetry` and `internal/wirejson` don't; the golden tests that pin wire bytes live in `server`, `status` and `config`).
 
 No linter is configured beyond `go vet`; no Makefile or CI workflow exists in this repo.
 
@@ -33,15 +33,19 @@ Standard layout: `cmd/sm-manager/main.go` is a thin wiring layer (config → ser
 - **`internal/protocol`** — the wire contract's Go side: op codes, `IsStructural`, request/response/target types, and the length-prefixed (4-byte big-endian uint32 + JSON, 16 MiB cap) frame codec.
 - **`internal/config`** — `Config` struct, loaded from a JSON file (`SM_MANAGER_CONFIG` env, default `./config.json`) then overridden field-by-field by `SM_*` env vars. Nothing bot-specific is compiled in.
 - **`internal/server`** — the socket hub (`hub.go`): in-memory cluster registry, structural-op handling, business-op allow-list gate + blind forward-by-target, request/response correlation by `id`, the active-routing table, generation tagging + readiness gating, `DEPLOY` handling via a `Deployer` interface, and manager-initiated `QUIESCE`/`QUIESCED` correlation. `server.go` owns the Unix listener, per-connection read loop, and heartbeat reaper.
-- **`internal/supervisor`** — spawns and restarts cluster child processes (`exec.CommandContext`), injects the env contract (`CLUSTER_ID`/`SHARD_LIST`/`TOTAL_SHARDS`/`SM_MANAGER_SOCKET`/`GENERATION`), exponential-backoff crash restart, and implements the batched `Deploy` rollout.
-- **`internal/status`** — the public statuspage WebSocket: internet-facing, separate from the internal Unix socket, snapshot+delta fanout, API-key auth, and IP-based rate-limiting/conn-capping behind Cloudflare+nginx.
+- **`internal/supervisor`**: spawns and restarts cluster child processes (`exec.CommandContext`), injects the env contract (`CLUSTER_ID`/`SHARD_LIST`/`TOTAL_SHARDS`/`SM_MANAGER_SOCKET`/`GENERATION`), exponential-backoff crash restart, and implements the batched `Deploy` rollout. It also runs instance processes (`instances.go`), each individually, with their own env contract (see Instances below).
+- **`internal/status`**: the public statuspage WebSocket: internet-facing, separate from the internal Unix socket, snapshot+delta fanout (clusters, plus instances in separate `instances`/`instance`/`removedInstance` fields that never carry guild ids), API-key auth, and IP-based rate-limiting/conn-capping behind Cloudflare+nginx.
 - **`internal/telemetry`** — process-wide Sentry `Logger`/`Meter` singletons (`telemetry.Init` called once in `main` after `sentry.Init`; `Logger()`/`Meter()` lazily self-init to a safe no-op if a caller — e.g. a test — never calls `Init`).
-- **`internal/wirejson`**: the `encoding/json/v2` option sets (Go 1.27). `Wire` keeps frames and status messages byte-compatible with what v1 `encoding/json` produced (null for nil slices/maps, HTML/U+2028 escaping, lenient UTF-8 for opaque payloads); `Config` is strict (case-sensitive, no duplicate or unknown keys, no null numbers). Raw JSON values are `jsontext.Value`; a raw field that may be empty needs `omitzero`, not `omitempty`. Golden tests named `*Golden*` pin the exact bytes: run them after any wire-type change.
+- **`internal/wirejson`**: the `encoding/json/v2` option sets (Go 1.27). `Wire` keeps frames and status messages byte-compatible with what v1 `encoding/json` produced (null for nil slices/maps, HTML/U+2028 escaping, lenient UTF-8 for opaque payloads); `Config` is strict (case-sensitive, no duplicate or unknown keys, no nulls). Raw JSON values are `jsontext.Value`; a raw field that may be empty needs `omitzero`, not `omitempty`. Golden tests named `*Golden*` pin the exact bytes: run them after any wire-type change.
 
 ### Two-tier op codes (the design's core constraint)
 
-- **Structural ops** (`REGISTER`, `HEARTBEAT`, `QUIESCE`, `QUIESCED`, `DEPLOY`, `GET_CLUSTER_STATUSES`) — the only ops the manager understands and acts on. Fixed across every bot.
+- **Structural ops** (`REGISTER`, `HEARTBEAT`, `QUIESCE`, `QUIESCED`, `DEPLOY`, `GET_CLUSTER_STATUSES`, and the six instance ops `START_INSTANCE`, `STOP_INSTANCE`, `RESTART_INSTANCE`, `REMOVE_INSTANCE`, `SYNC_INSTANCES`, `GET_INSTANCE_STATUSES`; twelve in all), the only ops the manager understands and acts on. Fixed across every bot.
 - **Business ops** — opaque to the manager. It checks the op name against `Config.AllowedBusinessOps`, then forwards the frame to the resolved target cluster *without ever decoding the payload*. The manager rejects unknown ops by name; the receiving cluster validates the payload itself. Never add payload-shape knowledge to this repo — that recouples it to one bot's domain and defeats the reuse design.
+
+### Instances
+
+An **instance** is a separately supervised single-process bot, identified by an opaque `instanceId`, with its own registry next to the cluster fleet (`internal/server/instances.go`, `internal/supervisor/instances.go`). It owns a set of guild ids (the exception register) and never appears in `GET_CLUSTER_STATUSES`; the manager knows nothing else about what an instance is. It is spawned from `instanceSpawnCommand` (never the cluster `spawnCommand`) with the env contract `INSTANCE_ID`, `SM_MANAGER_SOCKET` and `GENERATION` (no cluster id or shard list). An exit with `instanceNoRestartExitCode` (default 78) marks it `failed` and is not restarted; any other exit restarts with backoff. Every instance state change is published to the status sink (`Hub.instanceChanged`, outside `h.mu`), and `REMOVE_INSTANCE` removes it from the feed.
 
 ### Generations and rollouts
 
@@ -51,7 +55,7 @@ Every cluster is tagged with the epoch (generation) it was spawned under. `DEPLO
 
 ### Transport
 
-Every peer (clusters, `sm-api`) connects to the same Unix socket path — that's the whole address, which is why it's configured rather than hardcoded (differs per environment). `resolveTarget` computes shard→cluster routing from topology (`shardId / shardsPerCluster`, or Discord's `(guildID >> 22) % totalShards` for a `guildId` target) rather than keeping a stored shard table.
+Every peer (clusters, `sm-api`) connects to the same Unix socket path, that's the whole address, which is why it's configured rather than hardcoded (differs per environment). `resolveTarget` computes shard→cluster routing from topology (`shardId / shardsPerCluster`, or Discord's `(guildID >> 22) % totalShards` for a `guildId` target) rather than keeping a stored shard table. A `guildId` target consults the instance exception register first: a registered guild goes to its instance, and if that instance is not connected the sender gets `instance offline`; it never falls back to a cluster.
 
 ### Deliberate non-features
 

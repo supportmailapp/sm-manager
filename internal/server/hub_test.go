@@ -542,6 +542,9 @@ type fakeSink struct {
 	mu       sync.Mutex
 	pubs     []status.ClusterState
 	removals []int
+
+	instPubs     []status.InstanceState
+	instRemovals []string
 }
 
 func (s *fakeSink) Publish(cs status.ClusterState) {
@@ -553,6 +556,36 @@ func (s *fakeSink) Remove(cid int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.removals = append(s.removals, cid)
+}
+func (s *fakeSink) PublishInstance(is status.InstanceState) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.instPubs = append(s.instPubs, is)
+}
+func (s *fakeSink) RemoveInstance(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.instRemovals = append(s.instRemovals, id)
+}
+func (s *fakeSink) lastInstPub(id string) (status.InstanceState, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := len(s.instPubs) - 1; i >= 0; i-- {
+		if s.instPubs[i].InstanceID == id {
+			return s.instPubs[i], true
+		}
+	}
+	return status.InstanceState{}, false
+}
+func (s *fakeSink) instRemoved(id string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, r := range s.instRemovals {
+		if r == id {
+			return true
+		}
+	}
+	return false
 }
 func (s *fakeSink) lastPub() (status.ClusterState, bool) {
 	s.mu.Lock()

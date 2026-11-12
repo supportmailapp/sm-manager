@@ -12,6 +12,7 @@ package status
 import (
 	"encoding/json/jsontext"
 	"encoding/json/v2"
+	"sort"
 	"sync"
 
 	"sm-manager/internal/wirejson"
@@ -32,12 +33,18 @@ type ClusterState struct {
 
 // Event is one message on the wire. "snapshot" carries the full active fleet
 // (sent once, on connect); "delta" carries a single cluster that changed, or a
-// Removed clusterId that went away.
+// Removed clusterId that went away. Instances ride in their own fields so a
+// client that predates them sees the same bytes as before: a snapshot without
+// instances has no "instances" key, and instance deltas use "instance" and
+// "removedInstance", never "cluster" or "removed".
 type Event struct {
-	Type     string         `json:"type"`
-	Clusters []ClusterState `json:"clusters,omitempty"`
-	Cluster  *ClusterState  `json:"cluster,omitzero"`
-	Removed  *int           `json:"removed,omitzero"`
+	Type            string          `json:"type"`
+	Clusters        []ClusterState  `json:"clusters,omitempty"`
+	Instances       []InstanceState `json:"instances,omitempty"`
+	Cluster         *ClusterState   `json:"cluster,omitzero"`
+	Removed         *int            `json:"removed,omitzero"`
+	Instance        *InstanceState  `json:"instance,omitzero"`
+	RemovedInstance *string         `json:"removedInstance,omitzero"`
 }
 
 // Sink is the one-way channel the hub uses to push state changes into the
@@ -47,13 +54,16 @@ type Event struct {
 type Sink interface {
 	Publish(ClusterState)
 	Remove(clusterID int)
+	PublishInstance(InstanceState)
+	RemoveInstance(instanceID string)
 }
 
 // Broadcaster fans state deltas out to every connected statuspage client and
 // remembers the current active-fleet snapshot for late joiners.
 type Broadcaster struct {
 	mu      sync.Mutex
-	state   map[int]ClusterState // last-known active view, keyed by clusterId
+	state   map[int]ClusterState     // last-known active view, keyed by clusterId
+	insts   map[string]InstanceState // last-known instance view, keyed by instanceId
 	clients map[*client]struct{}
 }
 
@@ -67,6 +77,7 @@ type client struct {
 func NewBroadcaster() *Broadcaster {
 	return &Broadcaster{
 		state:   make(map[int]ClusterState),
+		insts:   make(map[string]InstanceState),
 		clients: make(map[*client]struct{}),
 	}
 }
@@ -93,6 +104,27 @@ func (b *Broadcaster) Remove(clusterID int) {
 	b.mu.Unlock()
 }
 
+// PublishInstance records an instance's new state and fans a delta out to all
+// clients. Called by the hub on every instance state change.
+func (b *Broadcaster) PublishInstance(is InstanceState) {
+	msg := marshal(Event{Type: "delta", Instance: &is})
+	b.mu.Lock()
+	b.insts[is.InstanceID] = is
+	b.fanoutLocked(msg)
+	b.mu.Unlock()
+}
+
+// RemoveInstance drops an instance from the view and tells clients it's gone.
+// Called by the hub when an instance entry is removed.
+func (b *Broadcaster) RemoveInstance(instanceID string) {
+	id := instanceID
+	msg := marshal(Event{Type: "delta", RemovedInstance: &id})
+	b.mu.Lock()
+	delete(b.insts, instanceID)
+	b.fanoutLocked(msg)
+	b.mu.Unlock()
+}
+
 // fanoutLocked non-blockingly delivers msg to every client. A client whose
 // buffer is full is assumed dead/slow and dropped — the status feed is
 // best-effort and must never back-pressure the hub. Caller holds b.mu.
@@ -115,6 +147,13 @@ func (b *Broadcaster) addClient(c *client) {
 	snap := Event{Type: "snapshot", Clusters: make([]ClusterState, 0, len(b.state))}
 	for _, cs := range b.state {
 		snap.Clusters = append(snap.Clusters, cs)
+	}
+	if len(b.insts) > 0 {
+		snap.Instances = make([]InstanceState, 0, len(b.insts))
+		for _, is := range b.insts {
+			snap.Instances = append(snap.Instances, is)
+		}
+		sort.Slice(snap.Instances, func(i, j int) bool { return snap.Instances[i].InstanceID < snap.Instances[j].InstanceID })
 	}
 	// First message: guaranteed to fit — the channel is empty and buffered.
 	c.send <- marshal(snap)

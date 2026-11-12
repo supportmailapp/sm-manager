@@ -169,3 +169,92 @@ func readEvent(t *testing.T, ctx context.Context, conn *websocket.Conn) Event {
 	}
 	return e
 }
+
+func TestSnapshotIncludesInstances(t *testing.T) {
+	b := NewBroadcaster()
+	b.Publish(ClusterState{ClusterID: 0, Generation: 1, Alive: true})
+	b.PublishInstance(InstanceState{InstanceID: "wl_b", State: InstanceRunning, Generation: 2, Alive: true})
+	b.PublishInstance(InstanceState{InstanceID: "wl_a", State: InstanceStarting})
+
+	c := &client{send: make(chan []byte, 8)}
+	b.addClient(c)
+
+	snap := recvEvent(t, c)
+	if snap.Type != "snapshot" {
+		t.Fatalf("bad snapshot: %+v", snap)
+	}
+	if len(snap.Clusters) != 1 || snap.Clusters[0].ClusterID != 0 {
+		t.Fatalf("cluster list changed: %+v", snap.Clusters)
+	}
+	if len(snap.Instances) != 2 || snap.Instances[0].InstanceID != "wl_a" || snap.Instances[1].InstanceID != "wl_b" {
+		t.Fatalf("instances should be listed sorted by id: %+v", snap.Instances)
+	}
+	if snap.Instances[1].State != InstanceRunning || snap.Instances[1].Generation != 2 {
+		t.Fatalf("instance state lost: %+v", snap.Instances[1])
+	}
+}
+
+func TestSnapshotWithoutInstancesOmitsField(t *testing.T) {
+	b := NewBroadcaster()
+	b.Publish(ClusterState{ClusterID: 0, Generation: 1, Alive: true})
+
+	c := &client{send: make(chan []byte, 8)}
+	b.addClient(c)
+
+	raw := string(<-c.send)
+	if strings.Contains(raw, `"instances"`) {
+		t.Fatalf("snapshot without instances must not carry the field: %s", raw)
+	}
+}
+
+func TestInstanceDeltaShape(t *testing.T) {
+	b := NewBroadcaster()
+	c := &client{send: make(chan []byte, 8)}
+	b.addClient(c)
+	<-c.send // snapshot
+
+	b.PublishInstance(InstanceState{InstanceID: "wl_a", State: InstanceRunning, Alive: true, LastBeat: 7})
+	raw := string(<-c.send)
+	for _, key := range []string{`"cluster"`, `"removed"`, `"removedInstance"`} {
+		if strings.Contains(raw, key) {
+			t.Fatalf("instance delta must not carry %s: %s", key, raw)
+		}
+	}
+	d := Event{}
+	if err := json.Unmarshal([]byte(raw), &d); err != nil {
+		t.Fatal(err)
+	}
+	if d.Type != "delta" || d.Instance == nil || d.Instance.InstanceID != "wl_a" {
+		t.Fatalf("bad instance delta: %s", raw)
+	}
+}
+
+func TestRemoveInstanceDelta(t *testing.T) {
+	b := NewBroadcaster()
+	b.PublishInstance(InstanceState{InstanceID: "wl_a", State: InstanceRunning})
+	c := &client{send: make(chan []byte, 8)}
+	b.addClient(c)
+	<-c.send // snapshot
+
+	b.RemoveInstance("wl_a")
+	raw := string(<-c.send)
+	d := Event{}
+	if err := json.Unmarshal([]byte(raw), &d); err != nil {
+		t.Fatal(err)
+	}
+	if d.Type != "delta" || d.RemovedInstance == nil || *d.RemovedInstance != "wl_a" {
+		t.Fatalf("bad removal delta: %s", raw)
+	}
+	for _, key := range []string{`"instance"`, `"cluster"`, `"removed"`} {
+		if strings.Contains(raw, key+":") {
+			t.Fatalf("removal delta must not carry %s: %s", key, raw)
+		}
+	}
+
+	late := &client{send: make(chan []byte, 8)}
+	b.addClient(late)
+	snap := recvEvent(t, late)
+	if len(snap.Instances) != 0 {
+		t.Fatalf("removed instance still in snapshot: %+v", snap.Instances)
+	}
+}

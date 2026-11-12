@@ -127,3 +127,52 @@ func TestWireGoldenOpaqueStatus(t *testing.T) {
 		})
 	}
 }
+
+func TestWireGoldenInstances(t *testing.T) {
+	id := "wl_0123456789abcdef01234567"
+	cases := []struct {
+		name string
+		ev   Event
+		want string
+	}{
+		{
+			name: "snapshot with clusters and instances",
+			ev: Event{Type: "snapshot",
+				Clusters: []ClusterState{{ClusterID: 0, Generation: 3, Alive: true, LastBeat: 5}},
+				Instances: []InstanceState{
+					{InstanceID: id, State: InstanceRunning, Generation: 2, Alive: true, LastBeat: 1700000000123, Status: []byte(`{"guilds":1}`)},
+					{InstanceID: "wl_b", State: InstanceFailed, ExitCode: 78},
+				}},
+			want: `{"type":"snapshot","clusters":[{"clusterId":0,"generation":3,"alive":true,"lastBeat":5}],"instances":[` +
+				`{"instanceId":"wl_0123456789abcdef01234567","state":"running","generation":2,"alive":true,"lastBeat":1700000000123,"status":{"guilds":1}},` +
+				`{"instanceId":"wl_b","state":"failed","generation":0,"alive":false,"lastBeat":0,"exitCode":78}]}`,
+		},
+		{
+			name: "snapshot with only instances",
+			ev:   Event{Type: "snapshot", Instances: []InstanceState{{InstanceID: "wl_a", State: InstanceStopped}}},
+			want: `{"type":"snapshot","instances":[{"instanceId":"wl_a","state":"stopped","generation":0,"alive":false,"lastBeat":0}]}`,
+		},
+		{
+			name: "empty instances slice omitted",
+			ev:   Event{Type: "snapshot", Clusters: []ClusterState{}, Instances: []InstanceState{}},
+			want: `{"type":"snapshot"}`,
+		},
+		{
+			name: "instance delta",
+			ev:   Event{Type: "delta", Instance: &InstanceState{InstanceID: "wl_a", State: InstanceStarting, Generation: 1}},
+			want: `{"type":"delta","instance":{"instanceId":"wl_a","state":"starting","generation":1,"alive":false,"lastBeat":0}}`,
+		},
+		{
+			name: "removed instance delta",
+			ev:   Event{Type: "delta", RemovedInstance: &id},
+			want: `{"type":"delta","removedInstance":"wl_0123456789abcdef01234567"}`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := string(marshal(tc.ev)); got != tc.want {
+				t.Fatalf("\n got %s\nwant %s", got, tc.want)
+			}
+		})
+	}
+}

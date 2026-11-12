@@ -32,6 +32,26 @@ export interface ClusterState {
   status?: unknown;
 }
 
+export type InstanceRunState = "stopped" | "starting" | "running" | "failed";
+
+/**
+ * The manager's public view of one instance (a separately supervised
+ * single-process bot). Never carries guild ids. `status` is the opaque payload
+ * from the instance's HEARTBEAT, forwarded verbatim.
+ */
+export interface InstanceState {
+  instanceId: string;
+  state: InstanceRunState;
+  generation: number;
+  alive: boolean;
+  /** Unix ms of the last heartbeat; 0 if never seen. */
+  lastBeat: number;
+  /** Last exit code. Omitted when 0. */
+  exitCode?: number;
+  /** Opaque bot-defined payload. Omitted when absent. */
+  status?: unknown;
+}
+
 /**
  * Full active-fleet snapshot. Sent exactly once, as the first message on
  * connect, so a late joiner is brought up to date without any replay.
@@ -40,17 +60,23 @@ export interface SnapshotEvent {
   type: "snapshot";
   /** Omitted (not []) when the active fleet is empty — the Go side is omitempty. */
   clusters?: ClusterState[];
+  /** Instances, sorted by instanceId. Omitted when there are none. */
+  instances?: InstanceState[];
 }
 
 /**
- * A single cluster changed. Exactly one of `cluster` / `removed` is present:
- * `cluster` = upsert this cluster's state; `removed` = this clusterId went
- * away (disconnect or heartbeat-reap).
+ * One cluster or instance changed. Exactly one of `cluster` / `removed` /
+ * `instance` / `removedInstance` is present: `cluster` = upsert this cluster's
+ * state; `removed` = this clusterId went away (disconnect or heartbeat-reap);
+ * `instance` = upsert this instance's state; `removedInstance` = this
+ * instanceId was removed.
  */
 export interface DeltaEvent {
   type: "delta";
   cluster?: ClusterState;
   removed?: number;
+  instance?: InstanceState;
+  removedInstance?: string;
 }
 
 /**
@@ -94,6 +120,13 @@ export function isSnapshot(e: StatusEvent): e is SnapshotEvent {
 /** Type guard: single-cluster delta. */
 export function isDelta(e: StatusEvent): e is DeltaEvent {
   return e.type === "delta";
+}
+
+/** True when a delta removes an instance. */
+export function isInstanceRemoval(
+  e: DeltaEvent,
+): e is DeltaEvent & { removedInstance: string } {
+  return typeof e.removedInstance === "string";
 }
 
 /** True when a delta removes a cluster (rather than upserting one). */

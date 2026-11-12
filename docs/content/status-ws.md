@@ -7,6 +7,16 @@ sidebar:
 
 Separate from the internal Unix socket: an **internet-facing** TCP HTTP server on `statusWsAddr`, one route (`/ws`, plus `/healthz`). It streams a `snapshot` on connect then `delta` frames as clusters register / heartbeat / promote / disconnect / reap (active/routed generation only). Receive-only — the manager never acts on anything a client sends. The cluster's opaque HEARTBEAT `status` payload is forwarded verbatim; the manager never parses it (stays bot-agnostic).
 
+## Instances
+
+Instances (separately supervised single-process bots) are published in their own fields, so a client that predates them sees exactly the bytes it saw before:
+
+- `snapshot` gains `instances` (`InstanceState[]`, sorted by `instanceId`). The key is absent when there are no instances.
+- A changed instance arrives as a `delta` with `instance` (an upsert of that `InstanceState`), never as `cluster`.
+- An instance that was removed arrives as a `delta` with `removedInstance` (its `instanceId`), never as `removed`.
+
+An `InstanceState` is `instanceId`, `state` (`stopped`, `starting`, `running` or `failed`), `generation`, `alive`, `lastBeat`, `exitCode` (only when non-zero) and the opaque `status` from the instance's HEARTBEAT. It carries **no guild ids**: this feed is public and the list of guilds an instance serves is not. Guild ids are only returned on the internal socket (`GET_INSTANCE_STATUSES`).
+
 ## Trust boundary — it's public
 
 Unlike the Unix socket (filesystem-permission gated, local-only), this endpoint is reachable from the internet, so it has an inbound attack surface **even though it only emits** — accepting a connection costs a goroutine, a snapshot copy, and a fanout slot, and every handshake runs the constant-time key check. Two gates guard it, in this order per request:

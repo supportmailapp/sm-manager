@@ -70,8 +70,31 @@ func (h *Hub) SetInstanceState(instanceID string, state status.InstanceRunState,
 }
 
 // instanceChanged is the single hook point for publishing an instance's new
-// state to the status feed. Called outside h.mu.
-func (h *Hub) instanceChanged(instanceID string) {}
+// state to the status feed. Called outside h.mu. It reads a fresh view under
+// its own lock rather than trusting the caller: a present entry is published
+// (state only, never its guild ids), an absent one is a removal.
+func (h *Hub) instanceChanged(instanceID string) {
+	h.mu.RLock()
+	sink := h.statusSink
+	var (
+		state   status.InstanceState
+		present bool
+	)
+	if inst := h.instances[instanceID]; inst != nil {
+		present = true
+		state = h.instanceInfoLocked(inst).InstanceState
+	}
+	h.mu.RUnlock()
+
+	if sink == nil {
+		return
+	}
+	if present {
+		sink.PublishInstance(state)
+	} else {
+		sink.RemoveInstance(instanceID)
+	}
+}
 
 // instanceInfoLocked builds the view of one entry. Caller holds h.mu.
 func (h *Hub) instanceInfoLocked(inst *instance) InstanceInfo {
