@@ -18,7 +18,7 @@ go run ./cmd/sm-manager
 go build -o sm-manager ./cmd/sm-manager
 ```
 
-Single test: `go test ./internal/server -run TestRegisterMarksClusterAlive -v` (swap the package path and test name; `internal/server`, `internal/supervisor`, and `internal/status` all have tests, `internal/config`/`internal/protocol`/`internal/telemetry` don't).
+Single test: `go test ./internal/server -run TestRegisterMarksClusterAlive -v` (swap the package path and test name; `internal/server`, `internal/supervisor`, and `internal/status` all have tests, `internal/protocol`/`internal/telemetry` don't).
 
 No linter is configured beyond `go vet`; no Makefile or CI workflow exists in this repo.
 
@@ -36,6 +36,7 @@ Standard layout: `cmd/sm-manager/main.go` is a thin wiring layer (config → ser
 - **`internal/supervisor`** — spawns and restarts cluster child processes (`exec.CommandContext`), injects the env contract (`CLUSTER_ID`/`SHARD_LIST`/`TOTAL_SHARDS`/`SM_MANAGER_SOCKET`/`GENERATION`), exponential-backoff crash restart, and implements the batched `Deploy` rollout.
 - **`internal/status`** — the public statuspage WebSocket: internet-facing, separate from the internal Unix socket, snapshot+delta fanout, API-key auth, and IP-based rate-limiting/conn-capping behind Cloudflare+nginx.
 - **`internal/telemetry`** — process-wide Sentry `Logger`/`Meter` singletons (`telemetry.Init` called once in `main` after `sentry.Init`; `Logger()`/`Meter()` lazily self-init to a safe no-op if a caller — e.g. a test — never calls `Init`).
+- **`internal/wirejson`**: the `encoding/json/v2` option sets (Go 1.27). `Wire` keeps frames and status messages byte-compatible with what v1 `encoding/json` produced (null for nil slices/maps, HTML/U+2028 escaping, lenient UTF-8 for opaque payloads); `Config` is strict (case-sensitive, no duplicate or unknown keys, no null numbers). Raw JSON values are `jsontext.Value`; a raw field that may be empty needs `omitzero`, not `omitempty`. Golden tests named `*Golden*` pin the exact bytes: run them after any wire-type change.
 
 ### Two-tier op codes (the design's core constraint)
 

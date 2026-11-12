@@ -1,7 +1,8 @@
 package server
 
 import (
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"log"
@@ -12,6 +13,7 @@ import (
 
 	"sm-manager/internal/protocol"
 	"sm-manager/internal/status"
+	"sm-manager/internal/wirejson"
 )
 
 // InstanceRunner is implemented by the supervisor. It owns the instance
@@ -32,7 +34,7 @@ type instance struct {
 
 	generation int
 	lastBeat   time.Time
-	status     json.RawMessage // opaque HEARTBEAT status, forwarded verbatim
+	status     jsontext.Value // opaque HEARTBEAT status, forwarded verbatim
 
 	// opMu serializes lifecycle ops (start/stop/restart/remove) per instance.
 	opMu sync.Mutex
@@ -144,16 +146,16 @@ func (h *Hub) handleInstanceRegister(c *Conn, req *protocol.ShardRequest, p inst
 // status payload.
 func (h *Hub) handleInstanceHeartbeat(c *Conn, req *protocol.ShardRequest, id string) {
 	var p struct {
-		Status json.RawMessage `json:"status"`
+		Status jsontext.Value `json:"status"`
 	}
-	_ = json.Unmarshal(req.Payload, &p)
+	_ = json.Unmarshal(req.Payload, &p, wirejson.Wire)
 
 	now := time.Now()
 	h.mu.Lock()
 	if inst := h.instances[id]; inst != nil && inst.conn == c {
 		inst.lastBeat = now
 		if len(p.Status) > 0 {
-			inst.status = append(json.RawMessage(nil), p.Status...)
+			inst.status = append(jsontext.Value(nil), p.Status...)
 		}
 	}
 	h.mu.Unlock()
@@ -232,10 +234,10 @@ type syncInstancesPayload struct {
 	Instances []InstanceSyncEntry `json:"instances"`
 }
 
-var jsonNull = json.RawMessage("null")
+var jsonNull = jsontext.Value("null")
 
 func (h *Hub) replyInstanceOK(c *Conn, req *protocol.ShardRequest, data any) {
-	raw, err := json.Marshal(data)
+	raw, err := json.Marshal(data, wirejson.Wire)
 	if err != nil {
 		_ = c.send(protocol.ShardResponse{ID: req.ID, OK: false, Error: "failed to marshal reply"})
 		return
@@ -273,7 +275,7 @@ func (h *Hub) handleInstanceOp(c *Conn, op protocol.OpCode, req *protocol.ShardR
 	switch op {
 	case protocol.OpStartInstance:
 		var p startInstancePayload
-		if err := json.Unmarshal(req.Payload, &p); err != nil || p.InstanceID == "" {
+		if err := json.Unmarshal(req.Payload, &p, wirejson.Wire); err != nil || p.InstanceID == "" {
 			h.replyInstanceErr(c, req, errors.New("malformed payload: instanceId and guildIds required"))
 			return
 		}
@@ -291,7 +293,7 @@ func (h *Hub) handleInstanceOp(c *Conn, op protocol.OpCode, req *protocol.ShardR
 
 	case protocol.OpStopInstance, protocol.OpRestartInstance, protocol.OpRemoveInstance:
 		var p instanceIDPayload
-		if err := json.Unmarshal(req.Payload, &p); err != nil || p.InstanceID == "" {
+		if err := json.Unmarshal(req.Payload, &p, wirejson.Wire); err != nil || p.InstanceID == "" {
 			h.replyInstanceErr(c, req, errors.New("malformed payload: instanceId required"))
 			return
 		}
@@ -307,7 +309,7 @@ func (h *Hub) handleInstanceOp(c *Conn, op protocol.OpCode, req *protocol.ShardR
 
 	case protocol.OpSyncInstances:
 		var p syncInstancesPayload
-		if err := json.Unmarshal(req.Payload, &p); err != nil {
+		if err := json.Unmarshal(req.Payload, &p, wirejson.Wire); err != nil {
 			h.replyInstanceErr(c, req, errors.New("malformed payload: instances required"))
 			return
 		}

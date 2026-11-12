@@ -1,13 +1,14 @@
 package config
 
 import (
-	"encoding/json"
+	"encoding/json/v2"
 	"fmt"
 	"os"
 	"strconv"
 	"strings"
 
 	"sm-manager/internal/protocol"
+	"sm-manager/internal/wirejson"
 )
 
 // Config holds all bot-specific settings. A second bot deployment is a
@@ -122,7 +123,7 @@ func Load() (*Config, error) {
 	raw, err := os.ReadFile(path)
 	switch {
 	case err == nil:
-		if err := json.Unmarshal(raw, cfg); err != nil {
+		if err := json.Unmarshal(raw, cfg, wirejson.Config); err != nil {
 			return nil, fmt.Errorf("parse config %s: %w", path, err)
 		}
 	case os.IsNotExist(err):

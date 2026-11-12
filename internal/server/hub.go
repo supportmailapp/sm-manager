@@ -2,7 +2,8 @@ package server
 
 import (
 	"context"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"log"
@@ -17,6 +18,7 @@ import (
 	"sm-manager/internal/protocol"
 	"sm-manager/internal/status"
 	"sm-manager/internal/telemetry"
+	"sm-manager/internal/wirejson"
 )
 
 // Deployer triggers a generation rollout — spawn a new generation, wait for
@@ -41,7 +43,7 @@ type Conn struct {
 	shards     []int
 	generation int
 	lastBeat   time.Time
-	status     json.RawMessage // opaque per-cluster HEARTBEAT status payload, forwarded verbatim to the statuspage WS
+	status     jsontext.Value // opaque per-cluster HEARTBEAT status payload, forwarded verbatim to the statuspage WS
 }
 
 // writeCloser is the subset of net.Conn the hub needs; narrowed for testability.
@@ -51,7 +53,7 @@ type writeCloser interface {
 }
 
 func (c *Conn) send(v any) error {
-	payload, err := json.Marshal(v)
+	payload, err := json.Marshal(v, wirejson.Wire)
 	if err != nil {
 		return err
 	}
@@ -234,7 +236,7 @@ func (h *Hub) removeConn(c *Conn) {
 // handleFrame dispatches one inbound frame from conn c.
 func (h *Hub) handleFrame(c *Conn, raw []byte) {
 	var kind protocol.FrameKind
-	if err := json.Unmarshal(raw, &kind); err != nil {
+	if err := json.Unmarshal(raw, &kind, wirejson.Wire); err != nil {
 		log.Printf("conn %d: bad frame: %v", c.id, err)
 		return
 	}
@@ -256,7 +258,7 @@ func (h *Hub) handleFrame(c *Conn, raw []byte) {
 // handleStructural processes the only ops the manager understands.
 func (h *Hub) handleStructural(c *Conn, op protocol.OpCode, raw []byte) {
 	var req protocol.ShardRequest
-	if err := json.Unmarshal(raw, &req); err != nil {
+	if err := json.Unmarshal(raw, &req, wirejson.Wire); err != nil {
 		_ = c.send(protocol.ShardResponse{ID: "", OK: false, Error: "malformed request"})
 		return
 	}
@@ -287,7 +289,7 @@ func (h *Hub) handleStructural(c *Conn, op protocol.OpCode, raw []byte) {
 // is involved.
 func (h *Hub) handleGetClusterStatuses(c *Conn, req *protocol.ShardRequest) {
 	states := h.snapshotActive()
-	data, err := json.Marshal(states)
+	data, err := json.Marshal(states, wirejson.Wire)
 	if err != nil {
 		_ = c.send(protocol.ShardResponse{ID: req.ID, OK: false, Error: "failed to marshal cluster statuses"})
 		return
@@ -330,7 +332,7 @@ type registerPayload struct {
 func (h *Hub) handleRegister(c *Conn, req *protocol.ShardRequest) {
 	// Probe first: an instanceId means the instance path, otherwise it is a cluster.
 	var probe instanceRegisterPayload
-	if err := json.Unmarshal(req.Payload, &probe); err != nil {
+	if err := json.Unmarshal(req.Payload, &probe, wirejson.Wire); err != nil {
 		_ = c.send(protocol.ShardResponse{ID: req.ID, OK: false, Error: "bad REGISTER payload"})
 		return
 	}
@@ -339,7 +341,7 @@ func (h *Hub) handleRegister(c *Conn, req *protocol.ShardRequest) {
 		return
 	}
 	var p registerPayload
-	if err := json.Unmarshal(req.Payload, &p); err != nil {
+	if err := json.Unmarshal(req.Payload, &p, wirejson.Wire); err != nil {
 		_ = c.send(protocol.ShardResponse{ID: req.ID, OK: false, Error: "bad REGISTER payload"})
 		return
 	}
@@ -426,7 +428,7 @@ func (h *Hub) handleDeploy(c *Conn, req *protocol.ShardRequest) {
 	}
 	data, _ := json.Marshal(struct {
 		Generation int `json:"generation"`
-	}{Generation: gen})
+	}{Generation: gen}, wirejson.Wire)
 	_ = c.send(protocol.ShardResponse{ID: req.ID, OK: true, Data: data})
 }
 
@@ -471,7 +473,7 @@ func (h *Hub) handleHeartbeat(c *Conn, req *protocol.ShardRequest) {
 // cluster untouched. The manager never inspects or validates the payload.
 func (h *Hub) handleBusiness(c *Conn, op protocol.OpCode, raw []byte) {
 	var kind protocol.FrameKind
-	_ = json.Unmarshal(raw, &kind)
+	_ = json.Unmarshal(raw, &kind, wirejson.Wire)
 
 	if _, ok := h.allowedOps[op]; !ok {
 		_ = c.send(protocol.ShardResponse{ID: kind.ID, OK: false, Error: "unknown op: " + string(op)})
@@ -480,7 +482,7 @@ func (h *Hub) handleBusiness(c *Conn, op protocol.OpCode, raw []byte) {
 
 	// Decode only the envelope needed for routing — never the payload.
 	var req protocol.ShardRequest
-	if err := json.Unmarshal(raw, &req); err != nil {
+	if err := json.Unmarshal(raw, &req, wirejson.Wire); err != nil {
 		_ = c.send(protocol.ShardResponse{ID: kind.ID, OK: false, Error: "malformed request"})
 		return
 	}

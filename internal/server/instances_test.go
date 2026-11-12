@@ -1,7 +1,8 @@
 package server
 
 import (
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"sync"
 	"testing"
 	"time"
@@ -24,7 +25,7 @@ func addInstance(h *Hub, id string, guildIDs ...string) {
 
 func sendFrame(t *testing.T, h *Hub, c *Conn, id string, op protocol.OpCode, payload string) {
 	t.Helper()
-	raw, err := json.Marshal(protocol.ShardRequest{ID: id, Op: op, Payload: json.RawMessage(payload)})
+	raw, err := json.Marshal(protocol.ShardRequest{ID: id, Op: op, Payload: jsontext.Value(payload)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -220,7 +221,7 @@ func routingHub(t *testing.T) (*Hub, *fakeConn) {
 	})
 	fc := &fakeConn{}
 	c := h.newConn(fc)
-	h.handleFrame(c, mustMarshal(protocol.ShardRequest{ID: "r0", Op: protocol.OpRegister, Payload: json.RawMessage(`{"clusterId":0,"shards":[0]}`)}))
+	h.handleFrame(c, mustMarshal(protocol.ShardRequest{ID: "r0", Op: protocol.OpRegister, Payload: jsontext.Value(`{"clusterId":0,"shards":[0]}`)}))
 	return h, fc
 }
 
@@ -232,7 +233,7 @@ func sendGuildRequest(t *testing.T, h *Hub, guildID string) *fakeConn {
 		ID:      "q1",
 		Op:      protocol.OpCode("GET_GUILD_LIST"),
 		Target:  &protocol.Target{GuildId: &guildID},
-		Payload: json.RawMessage(`{}`),
+		Payload: jsontext.Value(`{}`),
 	}))
 	return fc
 }

@@ -10,8 +10,11 @@
 package status
 
 import (
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"sync"
+
+	"sm-manager/internal/wirejson"
 )
 
 // ClusterState is the manager's public view of one cluster. Status is the
@@ -19,12 +22,12 @@ import (
 // pings, guild/member counts, …) — the manager forwards it verbatim and never
 // parses it, keeping the manager bot-agnostic.
 type ClusterState struct {
-	ClusterID  int             `json:"clusterId"`
-	Shards     []int           `json:"shards,omitempty"`
-	Generation int             `json:"generation"`
-	Alive      bool            `json:"alive"`
-	LastBeat   int64           `json:"lastBeat"` // unix ms; 0 if never seen
-	Status     json.RawMessage `json:"status,omitempty"`
+	ClusterID  int            `json:"clusterId"`
+	Shards     []int          `json:"shards,omitempty"`
+	Generation int            `json:"generation"`
+	Alive      bool           `json:"alive"`
+	LastBeat   int64          `json:"lastBeat"` // unix ms; 0 if never seen
+	Status     jsontext.Value `json:"status,omitzero"`
 }
 
 // Event is one message on the wire. "snapshot" carries the full active fleet
@@ -33,8 +36,8 @@ type ClusterState struct {
 type Event struct {
 	Type     string         `json:"type"`
 	Clusters []ClusterState `json:"clusters,omitempty"`
-	Cluster  *ClusterState  `json:"cluster,omitempty"`
-	Removed  *int           `json:"removed,omitempty"`
+	Cluster  *ClusterState  `json:"cluster,omitzero"`
+	Removed  *int           `json:"removed,omitzero"`
 }
 
 // Sink is the one-way channel the hub uses to push state changes into the
@@ -136,7 +139,7 @@ func (b *Broadcaster) dropLocked(c *client) {
 }
 
 func marshal(e Event) []byte {
-	b, err := json.Marshal(e)
+	b, err := json.Marshal(e, wirejson.Wire)
 	if err != nil {
 		// Event is all serializable types; a marshal error is a programmer bug.
 		return []byte(`{"type":"error"}`)
@@ -163,6 +166,6 @@ type InstanceState struct {
 	Generation int              `json:"generation"`
 	Alive      bool             `json:"alive"`
 	LastBeat   int64            `json:"lastBeat"` // unix ms; 0 if never seen
-	ExitCode   int              `json:"exitCode,omitempty"`
-	Status     json.RawMessage  `json:"status,omitempty"`
+	ExitCode   int              `json:"exitCode,omitzero"`
+	Status     jsontext.Value   `json:"status,omitzero"`
 }

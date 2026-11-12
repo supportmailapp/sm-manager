@@ -2,7 +2,8 @@ package server
 
 import (
 	"context"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"errors"
 	"sync"
 	"testing"
@@ -62,7 +63,7 @@ func TestRegisterMarksClusterAlive(t *testing.T) {
 	fc := &fakeConn{}
 	c := h.newConn(fc)
 
-	req := protocol.ShardRequest{ID: "1", Op: protocol.OpRegister, Payload: json.RawMessage(`{"clusterId":0,"shards":[0,1]}`)}
+	req := protocol.ShardRequest{ID: "1", Op: protocol.OpRegister, Payload: jsontext.Value(`{"clusterId":0,"shards":[0,1]}`)}
 	raw, _ := json.Marshal(req)
 	h.handleFrame(c, raw)
 
@@ -79,7 +80,7 @@ func TestUnknownBusinessOpRejected(t *testing.T) {
 	fc := &fakeConn{}
 	c := h.newConn(fc)
 
-	req := protocol.ShardRequest{ID: "9", Op: protocol.OpCode("NOT_A_REAL_OP"), Payload: json.RawMessage(`{}`)}
+	req := protocol.ShardRequest{ID: "9", Op: protocol.OpCode("NOT_A_REAL_OP"), Payload: jsontext.Value(`{}`)}
 	raw, _ := json.Marshal(req)
 	h.handleFrame(c, raw)
 
@@ -98,7 +99,7 @@ func TestBusinessOpForwardedAndResponseRouted(t *testing.T) {
 	// cluster 0 registers
 	clusterFC := &fakeConn{}
 	cluster := h.newConn(clusterFC)
-	regRaw, _ := json.Marshal(protocol.ShardRequest{ID: "r", Op: protocol.OpRegister, Payload: json.RawMessage(`{"clusterId":0,"shards":[0]}`)})
+	regRaw, _ := json.Marshal(protocol.ShardRequest{ID: "r", Op: protocol.OpRegister, Payload: jsontext.Value(`{"clusterId":0,"shards":[0]}`)})
 	h.handleFrame(cluster, regRaw)
 
 	// API client sends a business op targeting cluster 0
@@ -108,7 +109,7 @@ func TestBusinessOpForwardedAndResponseRouted(t *testing.T) {
 	bizRaw, _ := json.Marshal(protocol.ShardRequest{
 		ID: "abc", Op: protocol.OpCode("GET_GUILD_LIST"),
 		Target:  &protocol.Target{ClusterId: &cid},
-		Payload: json.RawMessage(`{"foo":"bar"}`),
+		Payload: jsontext.Value(`{"foo":"bar"}`),
 	})
 	h.handleFrame(api, bizRaw)
 
@@ -123,7 +124,7 @@ func TestBusinessOpForwardedAndResponseRouted(t *testing.T) {
 	}
 
 	// cluster replies; response must route back to the api conn
-	respRaw, _ := json.Marshal(protocol.ShardResponse{ID: "abc", OK: true, Data: json.RawMessage(`[]`)})
+	respRaw, _ := json.Marshal(protocol.ShardResponse{ID: "abc", OK: true, Data: jsontext.Value(`[]`)})
 	h.handleFrame(cluster, respRaw)
 
 	resp := decodeResp(t, apiFC.last())
@@ -162,8 +163,8 @@ func TestResolveTargetByGuildAndShard(t *testing.T) {
 	})
 	fc0, fc1 := &fakeConn{}, &fakeConn{}
 	c0, c1 := h.newConn(fc0), h.newConn(fc1)
-	h.handleFrame(c0, mustMarshal(protocol.ShardRequest{ID: "r0", Op: protocol.OpRegister, Payload: json.RawMessage(`{"clusterId":0,"shards":[0,1]}`)}))
-	h.handleFrame(c1, mustMarshal(protocol.ShardRequest{ID: "r1", Op: protocol.OpRegister, Payload: json.RawMessage(`{"clusterId":1,"shards":[2,3]}`)}))
+	h.handleFrame(c0, mustMarshal(protocol.ShardRequest{ID: "r0", Op: protocol.OpRegister, Payload: jsontext.Value(`{"clusterId":0,"shards":[0,1]}`)}))
+	h.handleFrame(c1, mustMarshal(protocol.ShardRequest{ID: "r1", Op: protocol.OpRegister, Payload: jsontext.Value(`{"clusterId":1,"shards":[2,3]}`)}))
 
 	// shard 3 → cluster 1
 	shard := 3
@@ -188,7 +189,7 @@ func TestRegisterTagsGeneration(t *testing.T) {
 	fc := &fakeConn{}
 	c := h.newConn(fc)
 
-	req := protocol.ShardRequest{ID: "1", Op: protocol.OpRegister, Payload: json.RawMessage(`{"clusterId":0,"shards":[0,1],"generation":3}`)}
+	req := protocol.ShardRequest{ID: "1", Op: protocol.OpRegister, Payload: jsontext.Value(`{"clusterId":0,"shards":[0,1],"generation":3}`)}
 	h.handleFrame(c, mustMarshal(req))
 
 	if resp := decodeResp(t, fc.last()); !resp.OK {
@@ -217,7 +218,7 @@ func TestGenerationReady(t *testing.T) {
 	c0 := h.newConn(&fakeConn{})
 	c1 := h.newConn(&fakeConn{})
 
-	h.handleFrame(c0, mustMarshal(protocol.ShardRequest{ID: "r0", Op: protocol.OpRegister, Payload: json.RawMessage(`{"clusterId":0,"shards":[0],"generation":1}`)}))
+	h.handleFrame(c0, mustMarshal(protocol.ShardRequest{ID: "r0", Op: protocol.OpRegister, Payload: jsontext.Value(`{"clusterId":0,"shards":[0],"generation":1}`)}))
 	if h.GenerationReady(1) {
 		t.Fatal("generation 1 should not be ready with only 1 of 2 clusters registered")
 	}
@@ -225,7 +226,7 @@ func TestGenerationReady(t *testing.T) {
 		t.Fatal("generation 0 has no registrations, should not be ready")
 	}
 
-	h.handleFrame(c1, mustMarshal(protocol.ShardRequest{ID: "r1", Op: protocol.OpRegister, Payload: json.RawMessage(`{"clusterId":1,"shards":[1],"generation":1}`)}))
+	h.handleFrame(c1, mustMarshal(protocol.ShardRequest{ID: "r1", Op: protocol.OpRegister, Payload: jsontext.Value(`{"clusterId":1,"shards":[1],"generation":1}`)}))
 	if !h.GenerationReady(1) {
 		t.Fatal("generation 1 should be ready once both clusters registered")
 	}
@@ -237,7 +238,7 @@ func TestGenerationReadyStaleHeartbeatNotReady(t *testing.T) {
 		HeartbeatTimeoutSecs: 1,
 	})
 	c0 := h.newConn(&fakeConn{})
-	h.handleFrame(c0, mustMarshal(protocol.ShardRequest{ID: "r0", Op: protocol.OpRegister, Payload: json.RawMessage(`{"clusterId":0,"shards":[0],"generation":5}`)}))
+	h.handleFrame(c0, mustMarshal(protocol.ShardRequest{ID: "r0", Op: protocol.OpRegister, Payload: jsontext.Value(`{"clusterId":0,"shards":[0],"generation":5}`)}))
 
 	if !h.GenerationReady(5) {
 		t.Fatal("generation 5 should be ready right after registration")
@@ -261,7 +262,7 @@ func TestAwaitGenerationSucceedsOnceReady(t *testing.T) {
 
 	go func() {
 		time.Sleep(20 * time.Millisecond)
-		h.handleFrame(c0, mustMarshal(protocol.ShardRequest{ID: "r0", Op: protocol.OpRegister, Payload: json.RawMessage(`{"clusterId":0,"shards":[0],"generation":2}`)}))
+		h.handleFrame(c0, mustMarshal(protocol.ShardRequest{ID: "r0", Op: protocol.OpRegister, Payload: jsontext.Value(`{"clusterId":0,"shards":[0],"generation":2}`)}))
 	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
@@ -303,7 +304,7 @@ func TestHandleDeployNoDeployerConfigured(t *testing.T) {
 	fc := &fakeConn{}
 	c := h.newConn(fc)
 
-	req := protocol.ShardRequest{ID: "d1", Op: protocol.OpDeploy, Payload: json.RawMessage(`{}`)}
+	req := protocol.ShardRequest{ID: "d1", Op: protocol.OpDeploy, Payload: jsontext.Value(`{}`)}
 	h.handleFrame(c, mustMarshal(req))
 
 	resp := decodeResp(t, fc.last())
@@ -318,7 +319,7 @@ func TestHandleDeploySuccess(t *testing.T) {
 	fc := &fakeConn{}
 	c := h.newConn(fc)
 
-	req := protocol.ShardRequest{ID: "d2", Op: protocol.OpDeploy, Payload: json.RawMessage(`{}`)}
+	req := protocol.ShardRequest{ID: "d2", Op: protocol.OpDeploy, Payload: jsontext.Value(`{}`)}
 	h.handleFrame(c, mustMarshal(req))
 
 	resp := decodeResp(t, fc.last())
@@ -342,7 +343,7 @@ func TestHandleDeployPropagatesError(t *testing.T) {
 	fc := &fakeConn{}
 	c := h.newConn(fc)
 
-	req := protocol.ShardRequest{ID: "d3", Op: protocol.OpDeploy, Payload: json.RawMessage(`{}`)}
+	req := protocol.ShardRequest{ID: "d3", Op: protocol.OpDeploy, Payload: jsontext.Value(`{}`)}
 	h.handleFrame(c, mustMarshal(req))
 
 	resp := decodeResp(t, fc.last())
@@ -358,7 +359,7 @@ func TestQuiesceGenerationSendsAndAwaitsAck(t *testing.T) {
 	h := NewHub(&config.Config{ClusterCount: 1, HeartbeatTimeoutSecs: 30})
 	fc := &fakeConn{}
 	c := h.newConn(fc)
-	h.handleFrame(c, mustMarshal(protocol.ShardRequest{ID: "r0", Op: protocol.OpRegister, Payload: json.RawMessage(`{"clusterId":0,"shards":[0],"generation":4}`)}))
+	h.handleFrame(c, mustMarshal(protocol.ShardRequest{ID: "r0", Op: protocol.OpRegister, Payload: jsontext.Value(`{"clusterId":0,"shards":[0],"generation":4}`)}))
 
 	done := make(chan error, 1)
 	go func() {
@@ -381,7 +382,7 @@ func TestQuiesceGenerationSendsAndAwaitsAck(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 
-	ackReq, _ := json.Marshal(protocol.ShardRequest{ID: quiesceReq.ID, Op: protocol.OpQuiesced, Payload: json.RawMessage(`{}`)})
+	ackReq, _ := json.Marshal(protocol.ShardRequest{ID: quiesceReq.ID, Op: protocol.OpQuiesced, Payload: jsontext.Value(`{}`)})
 	h.handleFrame(c, ackReq)
 
 	select {
@@ -398,7 +399,7 @@ func TestQuiesceGenerationTimesOutWithoutAck(t *testing.T) {
 	h := NewHub(&config.Config{ClusterCount: 1, HeartbeatTimeoutSecs: 30})
 	fc := &fakeConn{}
 	c := h.newConn(fc)
-	h.handleFrame(c, mustMarshal(protocol.ShardRequest{ID: "r0", Op: protocol.OpRegister, Payload: json.RawMessage(`{"clusterId":0,"shards":[0],"generation":9}`)}))
+	h.handleFrame(c, mustMarshal(protocol.ShardRequest{ID: "r0", Op: protocol.OpRegister, Payload: jsontext.Value(`{"clusterId":0,"shards":[0],"generation":9}`)}))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
@@ -420,14 +421,14 @@ func TestRegisterDoesNotStealActiveRouting(t *testing.T) {
 	cid := 0
 
 	old := h.newConn(&fakeConn{})
-	h.handleFrame(old, mustMarshal(protocol.ShardRequest{ID: "r0", Op: protocol.OpRegister, Payload: json.RawMessage(`{"clusterId":0,"shards":[0],"generation":1}`)}))
+	h.handleFrame(old, mustMarshal(protocol.ShardRequest{ID: "r0", Op: protocol.OpRegister, Payload: jsontext.Value(`{"clusterId":0,"shards":[0],"generation":1}`)}))
 	if got, _ := h.resolveTarget(&protocol.Target{ClusterId: &cid}); got != old {
 		t.Fatal("gen 1 should hold active routing after cold registration")
 	}
 
 	// New generation registers — must not steal routing yet.
 	fresh := h.newConn(&fakeConn{})
-	h.handleFrame(fresh, mustMarshal(protocol.ShardRequest{ID: "r1", Op: protocol.OpRegister, Payload: json.RawMessage(`{"clusterId":0,"shards":[0],"generation":2}`)}))
+	h.handleFrame(fresh, mustMarshal(protocol.ShardRequest{ID: "r1", Op: protocol.OpRegister, Payload: jsontext.Value(`{"clusterId":0,"shards":[0],"generation":2}`)}))
 	if got, _ := h.resolveTarget(&protocol.Target{ClusterId: &cid}); got != old {
 		t.Fatal("gen 2 register stole active routing before cutover — duplicate-routing window")
 	}
@@ -449,11 +450,11 @@ func TestRegisterRefillsEmptySlotOnCrashRestart(t *testing.T) {
 	cid := 0
 
 	first := h.newConn(&fakeConn{})
-	h.handleFrame(first, mustMarshal(protocol.ShardRequest{ID: "r0", Op: protocol.OpRegister, Payload: json.RawMessage(`{"clusterId":0,"shards":[0],"generation":1}`)}))
+	h.handleFrame(first, mustMarshal(protocol.ShardRequest{ID: "r0", Op: protocol.OpRegister, Payload: jsontext.Value(`{"clusterId":0,"shards":[0],"generation":1}`)}))
 	h.removeConn(first) // crash: socket closed
 
 	second := h.newConn(&fakeConn{})
-	h.handleFrame(second, mustMarshal(protocol.ShardRequest{ID: "r1", Op: protocol.OpRegister, Payload: json.RawMessage(`{"clusterId":0,"shards":[0],"generation":1}`)}))
+	h.handleFrame(second, mustMarshal(protocol.ShardRequest{ID: "r1", Op: protocol.OpRegister, Payload: jsontext.Value(`{"clusterId":0,"shards":[0],"generation":1}`)}))
 	if got, _ := h.resolveTarget(&protocol.Target{ClusterId: &cid}); got != second {
 		t.Fatal("respawned cluster did not reclaim the empty routing slot")
 	}
@@ -464,8 +465,8 @@ func TestAwaitClustersSubsetReady(t *testing.T) {
 	h := NewHub(&config.Config{ClusterCount: 4, HeartbeatTimeoutSecs: 30})
 	c0 := h.newConn(&fakeConn{})
 	c1 := h.newConn(&fakeConn{})
-	h.handleFrame(c0, mustMarshal(protocol.ShardRequest{ID: "r0", Op: protocol.OpRegister, Payload: json.RawMessage(`{"clusterId":0,"shards":[0],"generation":2}`)}))
-	h.handleFrame(c1, mustMarshal(protocol.ShardRequest{ID: "r1", Op: protocol.OpRegister, Payload: json.RawMessage(`{"clusterId":1,"shards":[1],"generation":2}`)}))
+	h.handleFrame(c0, mustMarshal(protocol.ShardRequest{ID: "r0", Op: protocol.OpRegister, Payload: jsontext.Value(`{"clusterId":0,"shards":[0],"generation":2}`)}))
+	h.handleFrame(c1, mustMarshal(protocol.ShardRequest{ID: "r1", Op: protocol.OpRegister, Payload: jsontext.Value(`{"clusterId":1,"shards":[1],"generation":2}`)}))
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
@@ -483,8 +484,8 @@ func TestQuiesceClustersSubset(t *testing.T) {
 	h := NewHub(&config.Config{ClusterCount: 2, HeartbeatTimeoutSecs: 30})
 	fc0, fc1 := &fakeConn{}, &fakeConn{}
 	c0, c1 := h.newConn(fc0), h.newConn(fc1)
-	h.handleFrame(c0, mustMarshal(protocol.ShardRequest{ID: "r0", Op: protocol.OpRegister, Payload: json.RawMessage(`{"clusterId":0,"shards":[0],"generation":1}`)}))
-	h.handleFrame(c1, mustMarshal(protocol.ShardRequest{ID: "r1", Op: protocol.OpRegister, Payload: json.RawMessage(`{"clusterId":1,"shards":[1],"generation":1}`)}))
+	h.handleFrame(c0, mustMarshal(protocol.ShardRequest{ID: "r0", Op: protocol.OpRegister, Payload: jsontext.Value(`{"clusterId":0,"shards":[0],"generation":1}`)}))
+	h.handleFrame(c1, mustMarshal(protocol.ShardRequest{ID: "r1", Op: protocol.OpRegister, Payload: jsontext.Value(`{"clusterId":1,"shards":[1],"generation":1}`)}))
 
 	done := make(chan error, 1)
 	go func() { done <- h.QuiesceClusters(context.Background(), 1, []int{0}) }()
@@ -503,7 +504,7 @@ func TestQuiesceClustersSubset(t *testing.T) {
 		}
 		time.Sleep(time.Millisecond)
 	}
-	h.handleFrame(c0, mustMarshal(protocol.ShardRequest{ID: q.ID, Op: protocol.OpQuiesced, Payload: json.RawMessage(`{}`)}))
+	h.handleFrame(c0, mustMarshal(protocol.ShardRequest{ID: q.ID, Op: protocol.OpQuiesced, Payload: jsontext.Value(`{}`)}))
 
 	select {
 	case err := <-done:
@@ -528,7 +529,7 @@ func TestBusinessOpNoTargetRejected(t *testing.T) {
 	fc := &fakeConn{}
 	c := h.newConn(fc)
 
-	bizRaw, _ := json.Marshal(protocol.ShardRequest{ID: "t", Op: protocol.OpCode("GET_GUILD_LIST"), Payload: json.RawMessage(`{}`)})
+	bizRaw, _ := json.Marshal(protocol.ShardRequest{ID: "t", Op: protocol.OpCode("GET_GUILD_LIST"), Payload: jsontext.Value(`{}`)})
 	h.handleFrame(c, bizRaw)
 
 	if resp := decodeResp(t, fc.last()); resp.OK {
@@ -569,7 +570,7 @@ func TestStatusSinkPublishesOnRegisterAndHeartbeat(t *testing.T) {
 	fc := &fakeConn{}
 	c := h.newConn(fc)
 
-	reg := protocol.ShardRequest{ID: "1", Op: protocol.OpRegister, Payload: json.RawMessage(`{"clusterId":0,"shards":[0,1],"generation":1}`)}
+	reg := protocol.ShardRequest{ID: "1", Op: protocol.OpRegister, Payload: jsontext.Value(`{"clusterId":0,"shards":[0,1],"generation":1}`)}
 	raw, _ := json.Marshal(reg)
 	h.handleFrame(c, raw)
 
@@ -579,7 +580,7 @@ func TestStatusSinkPublishesOnRegisterAndHeartbeat(t *testing.T) {
 	}
 
 	// Heartbeat carrying an opaque status payload should re-publish with it.
-	hb := protocol.ShardRequest{ID: "2", Op: protocol.OpHeartbeat, Payload: json.RawMessage(`{"guilds":3,"shards":[]}`)}
+	hb := protocol.ShardRequest{ID: "2", Op: protocol.OpHeartbeat, Payload: jsontext.Value(`{"guilds":3,"shards":[]}`)}
 	raw, _ = json.Marshal(hb)
 	h.handleFrame(c, raw)
 
@@ -596,7 +597,7 @@ func TestStatusSinkRemovesOnReap(t *testing.T) {
 	fc := &fakeConn{}
 	c := h.newConn(fc)
 
-	reg := protocol.ShardRequest{ID: "1", Op: protocol.OpRegister, Payload: json.RawMessage(`{"clusterId":0,"shards":[0],"generation":0}`)}
+	reg := protocol.ShardRequest{ID: "1", Op: protocol.OpRegister, Payload: jsontext.Value(`{"clusterId":0,"shards":[0],"generation":0}`)}
 	raw, _ := json.Marshal(reg)
 	h.handleFrame(c, raw)
 
@@ -623,12 +624,12 @@ func TestGetClusterStatusesReturnsActiveSnapshot(t *testing.T) {
 		reg := protocol.ShardRequest{
 			ID:      "reg",
 			Op:      protocol.OpRegister,
-			Payload: json.RawMessage(`{"clusterId":` + string(rune('0'+cid)) + `,"shards":[` + string(rune('0'+cid)) + `],"generation":0}`),
+			Payload: jsontext.Value(`{"clusterId":` + string(rune('0'+cid)) + `,"shards":[` + string(rune('0'+cid)) + `],"generation":0}`),
 		}
 		raw, _ := json.Marshal(reg)
 		h.handleFrame(c, raw)
 
-		hb := protocol.ShardRequest{ID: "hb", Op: protocol.OpHeartbeat, Payload: json.RawMessage(`{"status":{"guilds":2,"members":10}}`)}
+		hb := protocol.ShardRequest{ID: "hb", Op: protocol.OpHeartbeat, Payload: jsontext.Value(`{"status":{"guilds":2,"members":10}}`)}
 		raw, _ = json.Marshal(hb)
 		h.handleFrame(c, raw)
 	}
@@ -636,7 +637,7 @@ func TestGetClusterStatusesReturnsActiveSnapshot(t *testing.T) {
 	// A plain client (no REGISTER) asks for the snapshot.
 	client := &fakeConn{}
 	cc := h.newConn(client)
-	req := protocol.ShardRequest{ID: "snap", Op: protocol.OpGetClusterStatuses, Payload: json.RawMessage(`{}`)}
+	req := protocol.ShardRequest{ID: "snap", Op: protocol.OpGetClusterStatuses, Payload: jsontext.Value(`{}`)}
 	raw, _ := json.Marshal(req)
 	h.handleFrame(cc, raw)
 

@@ -1,6 +1,6 @@
 package protocol
 
-import "encoding/json"
+import "encoding/json/jsontext"
 
 type OpCode string
 
@@ -48,23 +48,23 @@ func IsStructural(op OpCode) bool {
 }
 
 type Target struct {
-	ShardId   *int    `json:"shardId,omitempty"`
-	ClusterId *int    `json:"clusterId,omitempty"`
-	GuildId   *string `json:"guildId,omitempty"`
+	ShardId   *int    `json:"shardId,omitzero"`
+	ClusterId *int    `json:"clusterId,omitzero"`
+	GuildId   *string `json:"guildId,omitzero"`
 }
 
 type ShardRequest struct {
-	ID      string          `json:"id"`
-	Op      OpCode          `json:"op"`
-	Target  *Target         `json:"target,omitempty"`
-	Payload json.RawMessage `json:"payload"`
+	ID      string         `json:"id"`
+	Op      OpCode         `json:"op"`
+	Target  *Target        `json:"target,omitzero"`
+	Payload jsontext.Value `json:"payload"`
 }
 
 type ShardResponse struct {
-	ID    string          `json:"id"`
-	OK    bool            `json:"ok"`
-	Data  json.RawMessage `json:"data,omitempty"`
-	Error string          `json:"error,omitempty"`
+	ID    string         `json:"id"`
+	OK    bool           `json:"ok"`
+	Data  jsontext.Value `json:"data,omitzero"`
+	Error string         `json:"error,omitempty"`
 }
 
 // FrameKind distinguishes an inbound request from an inbound response without
