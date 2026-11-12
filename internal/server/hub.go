@@ -37,6 +37,7 @@ type Conn struct {
 
 	mu         sync.Mutex
 	clusterID  *int
+	instanceID *string // set when the peer registered as an instance
 	shards     []int
 	generation int
 	lastBeat   time.Time
@@ -89,11 +90,16 @@ type Hub struct {
 	clusters    map[int]*Conn         // by clusterID, set on REGISTER — routes business ops to whichever generation last registered that slot
 	generations map[int]map[int]*Conn // generation → clusterID → Conn, used for readiness gating a rollout
 
+	instances     map[string]*instance // by instance id; entries survive disconnects, removed only by the instance ops
+	guildInstance map[string]string    // guild id → instance id (the exception register)
+
 	pending        map[string]*Conn         // correlation id → originating conn
 	quiesceWaiters map[string]chan struct{} // correlation id → waiter for a manager-initiated QUIESCE's QUIESCED ack
 	nextID         uint64
 
 	deployer Deployer // set once via SetDeployer; nil until the supervisor wires itself in
+
+	instanceRunner InstanceRunner // set once via SetInstanceRunner; nil until the supervisor wires itself in
 
 	statusSink status.Sink // set once via SetStatusSink; nil when the statuspage WS is disabled
 }
@@ -104,6 +110,8 @@ func NewHub(cfg *config.Config) *Hub {
 		allowedOps:     cfg.AllowedSet(),
 		clusters:       make(map[int]*Conn),
 		generations:    make(map[int]map[int]*Conn),
+		instances:      make(map[string]*instance),
+		guildInstance:  make(map[string]string),
 		pending:        make(map[string]*Conn),
 		quiesceWaiters: make(map[string]chan struct{}),
 	}
@@ -182,6 +190,7 @@ func (h *Hub) removeConn(c *Conn) {
 	c.mu.Lock()
 	cid := c.clusterID
 	gen := c.generation
+	iid := c.instanceID
 	c.mu.Unlock()
 	removedActive := false
 	if cid != nil {
@@ -199,6 +208,11 @@ func (h *Hub) removeConn(c *Conn) {
 			}
 		}
 	}
+	// An instance conn only ever clears its own registry entry, never a cluster slot.
+	detachedInstance := false
+	if iid != nil {
+		detachedInstance = h.detachInstanceConnLocked(*iid, c)
+	}
 	for id, origin := range h.pending {
 		if origin == c {
 			delete(h.pending, id)
@@ -211,6 +225,9 @@ func (h *Hub) removeConn(c *Conn) {
 	// public view (a stale new/old-gen conn dropping doesn't).
 	if removedActive {
 		h.publishActive(*cid)
+	}
+	if detachedInstance {
+		h.instanceChanged(*iid)
 	}
 }
 
@@ -307,6 +324,16 @@ type registerPayload struct {
 }
 
 func (h *Hub) handleRegister(c *Conn, req *protocol.ShardRequest) {
+	// Probe first: an instanceId means the instance path, otherwise it is a cluster.
+	var probe instanceRegisterPayload
+	if err := json.Unmarshal(req.Payload, &probe); err != nil {
+		_ = c.send(protocol.ShardResponse{ID: req.ID, OK: false, Error: "bad REGISTER payload"})
+		return
+	}
+	if probe.InstanceID != "" {
+		h.handleInstanceRegister(c, req, probe)
+		return
+	}
 	var p registerPayload
 	if err := json.Unmarshal(req.Payload, &p); err != nil {
 		_ = c.send(protocol.ShardResponse{ID: req.ID, OK: false, Error: "bad REGISTER payload"})
@@ -400,6 +427,13 @@ func (h *Hub) handleDeploy(c *Conn, req *protocol.ShardRequest) {
 }
 
 func (h *Hub) handleHeartbeat(c *Conn, req *protocol.ShardRequest) {
+	c.mu.Lock()
+	iid := c.instanceID
+	c.mu.Unlock()
+	if iid != nil {
+		h.handleInstanceHeartbeat(c, req, *iid)
+		return
+	}
 	c.mu.Lock()
 	c.lastBeat = time.Now()
 	if len(req.Payload) > 0 {
@@ -571,11 +605,15 @@ func (h *Hub) reapDead() {
 			reaped = append(reaped, cid)
 		}
 	}
+	reapedInstances := h.reapInstancesLocked(now, timeout)
 	h.cond.Broadcast()
 	h.mu.Unlock()
 
 	for _, cid := range reaped {
 		h.publishActive(cid) // slot now empty → emits a removal
+	}
+	for _, id := range reapedInstances {
+		h.instanceChanged(id)
 	}
 }
 

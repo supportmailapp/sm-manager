@@ -70,6 +70,16 @@ type Config struct {
 	StatusMaxConnsPerIP int `json:"statusMaxConnsPerIp"`
 	// StatusMaxConns caps concurrent live WS connections across all IPs. 0 off.
 	StatusMaxConns int `json:"statusMaxConns"`
+	// InstanceSpawnCommand is the command (binary + args) for an instance
+	// process. Empty means instances cannot be started. Instances run in
+	// SpawnDir. Never the cluster SpawnCommand.
+	InstanceSpawnCommand []string `json:"instanceSpawnCommand"`
+	// InstanceNoRestartExitCode is the exit code with which an instance asks not
+	// to be restarted (state becomes failed instead).
+	InstanceNoRestartExitCode int `json:"instanceNoRestartExitCode"`
+	// InstanceStopGraceSecs is how long a stopping instance gets after SIGTERM
+	// before it is killed.
+	InstanceStopGraceSecs int `json:"instanceStopGraceSecs"`
 	// SentryDSN is the error/log/metric ingest endpoint. Empty disables Sentry.
 	SentryDSN string `json:"sentryDsn"`
 	// SentryEnvironment tags events (e.g. "production", "staging").
@@ -105,6 +115,8 @@ func Load() (*Config, error) {
 		StatusHandshakeRatePerMin: 60,
 		StatusMaxConnsPerIP:       20,
 		StatusMaxConns:            5000,
+		InstanceNoRestartExitCode: 78,
+		InstanceStopGraceSecs:     12,
 	}
 
 	raw, err := os.ReadFile(path)
@@ -204,6 +216,19 @@ func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("SM_STATUS_MAX_CONNS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			cfg.StatusMaxConns = n
+		}
+	}
+	if v := os.Getenv("SM_INSTANCE_SPAWN_COMMAND"); v != "" {
+		cfg.InstanceSpawnCommand = strings.Fields(v)
+	}
+	if v := os.Getenv("SM_INSTANCE_NO_RESTART_EXIT_CODE"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.InstanceNoRestartExitCode = n
+		}
+	}
+	if v := os.Getenv("SM_INSTANCE_STOP_GRACE_SECS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.InstanceStopGraceSecs = n
 		}
 	}
 	if v := os.Getenv("SM_SENTRY_DSN"); v != "" {

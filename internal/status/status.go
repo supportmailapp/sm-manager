@@ -143,3 +143,26 @@ func marshal(e Event) []byte {
 	}
 	return b
 }
+
+// InstanceRunState is the lifecycle state of one managed instance process.
+type InstanceRunState string
+
+const (
+	InstanceStopped  InstanceRunState = "stopped"
+	InstanceStarting InstanceRunState = "starting"
+	InstanceRunning  InstanceRunState = "running"
+	InstanceFailed   InstanceRunState = "failed"
+)
+
+// InstanceState is the manager's public view of one instance. Status is the
+// opaque payload the instance attaches to its HEARTBEAT, forwarded verbatim.
+// It carries no guild ids: the public feed must not list what an instance owns.
+type InstanceState struct {
+	InstanceID string           `json:"instanceId"`
+	State      InstanceRunState `json:"state"`
+	Generation int              `json:"generation"`
+	Alive      bool             `json:"alive"`
+	LastBeat   int64            `json:"lastBeat"` // unix ms; 0 if never seen
+	ExitCode   int              `json:"exitCode,omitempty"`
+	Status     json.RawMessage  `json:"status,omitempty"`
+}
