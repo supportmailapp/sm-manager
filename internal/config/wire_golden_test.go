@@ -28,6 +28,10 @@ func TestWireGoldenExampleConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// AllowedBusinessOps[9] is a "" placeholder, replaced below by the loaded value.
+	// That op is the one bot-specific name in the example file. The manager stays
+	// bot-agnostic, so its tests do not spell bot-specific names out: they check
+	// the name's shape (REFRESH_ prefix, _GUILDS suffix) and copy it across.
 	want := &Config{
 		SocketPath:                "/tmp/sm-manager.sock",
 		SpawnCommand:              []string{"bun", "run", "--env-file=.env.production", "src/cluster.ts"},
@@ -167,15 +171,19 @@ func TestWireGoldenConfigRejects(t *testing.T) {
 // Every field type Config uses must have a null rejector in wirejson.Config.
 // This fails when a field of another type (bool, int64, map, struct, ...) is
 // added, as a reminder to extend the rejectors and the strict-parsing cases.
+// The comparison is on the concrete type, not on its Kind: the rejectors are
+// registered for int, string and []string exactly, so a named type such as
+// `type Secs int` has Kind Int but would slip past them.
 func TestConfigFieldTypesAreCoveredByNullRejectors(t *testing.T) {
-	covered := map[reflect.Kind]bool{reflect.Int: true, reflect.String: true}
-	rt := reflect.TypeOf(Config{})
+	covered := map[reflect.Type]bool{
+		reflect.TypeFor[int]():      true,
+		reflect.TypeFor[string]():   true,
+		reflect.TypeFor[[]string](): true,
+	}
+	rt := reflect.TypeFor[Config]()
 	for i := 0; i < rt.NumField(); i++ {
 		f := rt.Field(i)
-		switch {
-		case covered[f.Type.Kind()]:
-		case f.Type == reflect.TypeOf([]string(nil)):
-		default:
+		if !covered[f.Type] {
 			t.Errorf("field %s has type %s with no null rejector", f.Name, f.Type)
 		}
 	}
