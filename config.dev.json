@@ -1,0 +1,36 @@
+// Example dev config for me
+{
+  "socketPath": "/tmp/sm-manager.sock",
+  "spawnCommand": ["bun", "run", "--env-file=.env.development", "src/cluster.ts"],
+  "spawnDir": "../v2",
+  "instanceSpawnCommand": ["bun", "run", "--env-file=.env.development", "src/cluster.ts"],
+  "instanceNoRestartExitCode": 78,
+  "instanceStopGraceSecs": 12,
+  "shardsPerCluster": 2,
+  "clusterCount": 1,
+  "heartbeatTimeoutSecs": 30,
+  "deployTimeoutSecs": 120,
+  "deployBatchSize": 1,
+  "statusWsAddr": ":4000",
+  "statusApiKeys": ["e7c94d34e46325bbc8aa61f5d8085dd1f832dc974f503733"],
+  "statusRealIpHeader": "CF-Connecting-IP",
+  "statusTrustedProxies": ["127.0.0.1/32", "::1/128"],
+  "statusHandshakeRatePerMin": 60,
+  "statusMaxConnsPerIp": 20,
+  "statusMaxConns": 5000,
+  "allowedBusinessOps": [
+    "VERIFY_GUILD_MEMBERSHIP",
+    "GET_GUILD_USERS",
+    "CHECK_MENTION_PERMISSIONS",
+    "SETUP_TICKETS",
+    "GET_FORUM_TAGS",
+    "SET_FORUM_TAGS",
+    "GET_GUILD_LIST",
+    "SYNC_GUILDS_WITH_DB",
+    "HANDLE_DM_REPORT",
+    "REFRESH_WHITELABEL_GUILDS",
+    "CLOSE_ALL_TICKETS"
+  ],
+  "sentryDsn": "https://818c0e02e7a27a2ef73e38494dc4f513@o4508704165265408.ingest.de.sentry.io/4512092129722448",
+  "sentryEnvironment": "development"
+}
