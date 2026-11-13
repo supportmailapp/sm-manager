@@ -250,6 +250,15 @@ func (h *Hub) handleFrame(c *Conn, raw []byte) {
 	var kind protocol.FrameKind
 	if err := json.Unmarshal(raw, &kind, wirejson.Wire); err != nil {
 		log.Printf("conn %d: bad frame: %v", c.id, err)
+		// Wire rejects repeated member names (anywhere in the frame, payload
+		// included). A requester still waiting on an answer should hear about
+		// it, so reply when the request's id can be read leniently. A frame
+		// that is not JSON, or has no op or no id, stays a silent drop.
+		var lenient protocol.FrameKind
+		if json.Unmarshal(raw, &lenient, wirejson.Wire, jsontext.AllowDuplicateNames(true)) == nil &&
+			lenient.Op != nil && lenient.ID != "" {
+			_ = c.send(protocol.ShardResponse{ID: lenient.ID, OK: false, Error: "malformed request"})
+		}
 		return
 	}
 

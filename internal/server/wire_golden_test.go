@@ -375,3 +375,80 @@ func TestWireGoldenInvalidUTF8InDecodedStrings(t *testing.T) {
 		t.Fatalf("raw invalid byte\n got %q\nwant %q", got, want)
 	}
 }
+
+// A request frame with a repeated member name (at the top level or inside the
+// payload) is refused with an error that carries the request's id. A frame that
+// is not a request, or whose id cannot be read, is still dropped without reply.
+func TestWireGoldenDuplicateMemberNames(t *testing.T) {
+	h := goldenHub()
+	fc := &fakeConn{}
+	c := h.newConn(fc)
+
+	replied := []struct{ frame, want string }{
+		{`{"id":"d1","op":"GET_GUILD_LIST","op":"X","payload":{}}`, `{"id":"d1","ok":false,"error":"malformed request"}`},
+		{`{"id":"d2","op":"GET_GUILD_LIST","payload":{"a":1,"a":2}}`, `{"id":"d2","ok":false,"error":"malformed request"}`},
+		{`{"id":"d3","op":"DEPLOY","payload":{},"payload":{}}`, `{"id":"d3","ok":false,"error":"malformed request"}`},
+		{`{"id":"d4","op":"REGISTER","payload":{"clusterId":0,"clusterId":1}}`, `{"id":"d4","ok":false,"error":"malformed request"}`},
+	}
+	for i, tc := range replied {
+		raw(h, c, tc.frame)
+		if got := reply(t, fc, i+1); got != tc.want {
+			t.Fatalf("frame %s\n got %s\nwant %s", tc.frame, got, tc.want)
+		}
+	}
+	if n := pendingCount(h); n != 0 || clusterCount(h) != 0 {
+		t.Fatalf("a refused frame had effects: %d pending, %d clusters", n, clusterCount(h))
+	}
+
+	before := frameCount(fc)
+	raw(h, c, `{"id":"d5","ok":true,"ok":false}`)              // a response, not a request
+	raw(h, c, `{"op":"DEPLOY","op":"X"}`)                      // no id to answer to
+	raw(h, c, `{"id":"","op":"DEPLOY","op":"X","payload":{}}`) // empty id
+	if got := frameCount(fc); got != before {
+		t.Fatalf("%d unexpected replies, last %s", got-before, fc.last())
+	}
+}
+
+// A status value is relayed as the client sent it, whatever string content it
+// holds. Invalid UTF-8 bytes and lone surrogate escapes pass through unchanged,
+// as they did with encoding/json v1: the manager only forwards the value.
+func TestWireGoldenInvalidUTF8InRemarshalledStatus(t *testing.T) {
+	cases := []struct{ name, heartbeat, wantStatus string }{
+		{"raw invalid byte", "{\"note\":\"a\xffb\"}", "{\"note\":\"a\xffb\"}"},
+		{"lone surrogate escape", bs(`{"note":"aBSud83db"}`), bs(`{"note":"aBSud83db"}`)},
+		{"valid input is still compacted and escaped", `{ "n" : "<" }`, bs(`{"n":"BSu003c"}`)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := goldenHub()
+			c := h.newConn(&fakeConn{})
+			raw(h, c, `{"id":"r","op":"REGISTER","payload":{"clusterId":0,"shards":[0]}}`)
+			raw(h, c, `{"id":"h","op":"HEARTBEAT","payload":`+tc.heartbeat+`}`)
+			c.mu.Lock()
+			c.lastBeat = time.UnixMilli(7)
+			c.mu.Unlock()
+
+			// Cluster statuses are re-marshalled with the Wire options.
+			client := &fakeConn{}
+			raw(h, h.newConn(client), `{"id":"s","op":"GET_CLUSTER_STATUSES"}`)
+			want := `{"id":"s","ok":true,"data":[{"clusterId":0,"shards":[0],"generation":0,"alive":true,"lastBeat":7,"status":` + tc.wantStatus + `}]}`
+			if got := reply(t, client, 1); got != want {
+				t.Fatalf("cluster status\n got %q\nwant %q", got, want)
+			}
+
+			// So are instance statuses.
+			addInstance(h, "wl_a", "1")
+			ic := h.newConn(&fakeConn{})
+			raw(h, ic, `{"id":"ir","op":"REGISTER","payload":{"instanceId":"wl_a","generation":1}}`)
+			raw(h, ic, `{"id":"ih","op":"HEARTBEAT","payload":{"instanceId":"wl_a","status":`+tc.heartbeat+`}}`)
+			h.mu.Lock()
+			h.instances["wl_a"].lastBeat = time.UnixMilli(9)
+			h.mu.Unlock()
+			raw(h, h.newConn(client), `{"id":"i","op":"GET_INSTANCE_STATUSES"}`)
+			want = `{"id":"i","ok":true,"data":[{"instanceId":"wl_a","state":"running","generation":1,"alive":true,"lastBeat":9,"status":` + tc.wantStatus + `,"guildIds":["1"]}]}`
+			if got := reply(t, client, 2); got != want {
+				t.Fatalf("instance status\n got %q\nwant %q", got, want)
+			}
+		})
+	}
+}
