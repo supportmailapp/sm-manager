@@ -55,7 +55,7 @@ Every cluster is tagged with the epoch (generation) it was spawned under. `DEPLO
 
 ### Transport
 
-Every peer (clusters, `sm-api`) connects to the same Unix socket path, that's the whole address, which is why it's configured rather than hardcoded (differs per environment). `resolveTarget` computes shard→cluster routing from topology (`shardId / shardsPerCluster`, or Discord's `(guildID >> 22) % totalShards` for a `guildId` target) rather than keeping a stored shard table. A `guildId` target consults the instance exception register first: a registered guild goes to its instance, and if that instance is not connected the sender gets `instance offline`; it never falls back to a cluster.
+Every peer (clusters, `sm-api`) connects to the same Unix socket path. That path is the whole address, so it is configured rather than hardcoded (it differs per environment). `resolveTarget` computes shard→cluster routing from topology (`shardId / shardsPerCluster`, or Discord's `(guildID >> 22) % totalShards` for a `guildId` target) rather than keeping a stored shard table. A `guildId` target consults the instance exception register first: a registered guild goes to its instance, and if that instance is not connected the sender gets `instance offline`; it never falls back to a cluster.
 
 ### Deliberate non-features
 
