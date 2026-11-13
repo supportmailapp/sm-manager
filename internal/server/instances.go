@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"sync"
@@ -350,8 +351,10 @@ func (h *Hub) replyStop(c *Conn, req *protocol.ShardRequest, runner InstanceRunn
 		h.replyInstanceOK(c, req, jsonNull)
 		return
 	}
-	runner.StopInstance(id)
-	inst.opMu.Unlock()
+	func() {
+		defer inst.opMu.Unlock()
+		runner.StopInstance(id)
+	}()
 	h.instanceChanged(id)
 	info, ok := h.instanceInfo(id)
 	if !ok {
@@ -367,9 +370,12 @@ func (h *Hub) replyRestart(c *Conn, req *protocol.ShardRequest, runner InstanceR
 		h.replyInstanceErr(c, req, errUnknownInstance)
 		return
 	}
-	runner.StopInstance(id)
-	err := h.spawnLocked(runner, id)
-	inst.opMu.Unlock()
+	var err error
+	func() {
+		defer inst.opMu.Unlock()
+		runner.StopInstance(id)
+		err = h.spawnLocked(runner, id)
+	}()
 	h.instanceChanged(id)
 	if err != nil {
 		h.replyInstanceErr(c, req, err)
@@ -532,14 +538,16 @@ func (h *Hub) removeInstance(runner InstanceRunner, id string) {
 	if inst == nil {
 		return
 	}
-	runner.StopInstance(id)
-	h.mu.Lock()
-	if h.instances[id] == inst {
-		h.setGuildsLocked(inst, nil)
-		delete(h.instances, id)
-	}
-	h.mu.Unlock()
-	inst.opMu.Unlock()
+	func() {
+		defer inst.opMu.Unlock()
+		runner.StopInstance(id)
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		if h.instances[id] == inst {
+			h.setGuildsLocked(inst, nil)
+			delete(h.instances, id)
+		}
+	}()
 	h.instanceChanged(id)
 }
 
@@ -583,11 +591,23 @@ func (h *Hub) syncInstances(runner InstanceRunner, entries []InstanceSyncEntry) 
 	}
 	h.mu.RUnlock()
 	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var failures []string
+	fail := func(id string, err error) {
+		mu.Lock()
+		failures = append(failures, fmt.Sprintf("%s: %v", id, err))
+		mu.Unlock()
+	}
 	for _, id := range stale {
 		wg.Add(1)
 		go func(id string) {
 			defer wg.Done()
-			h.removeInstance(runner, id)
+			if err := recovered("sync remove", id, func() error {
+				h.removeInstance(runner, id)
+				return nil
+			}); err != nil {
+				fail(id, err)
+			}
 		}(id)
 	}
 	wg.Wait()
@@ -630,16 +650,14 @@ func (h *Hub) syncInstances(runner InstanceRunner, entries []InstanceSyncEntry) 
 	}
 
 	// Phase 4: apply run flags.
-	var mu sync.Mutex
-	var failures []string
 	for _, e := range entries {
 		wg.Add(1)
 		go func(e InstanceSyncEntry) {
 			defer wg.Done()
-			if err := h.applyRunFlag(runner, e); err != nil {
-				mu.Lock()
-				failures = append(failures, fmt.Sprintf("%s: %v", e.InstanceID, err))
-				mu.Unlock()
+			if err := recovered("sync run flag", e.InstanceID, func() error {
+				return h.applyRunFlag(runner, e)
+			}); err != nil {
+				fail(e.InstanceID, err)
 			}
 		}(e)
 	}
@@ -649,6 +667,20 @@ func (h *Hub) syncInstances(runner InstanceRunner, entries []InstanceSyncEntry) 
 		return errors.New(strings.Join(failures, "; "))
 	}
 	return nil
+}
+
+// recovered runs fn and turns a panic into an error. SYNC_INSTANCES works on
+// goroutines of its own, outside the recover of the op handler, so an unrecovered
+// panic there would take the whole manager (and every cluster) down. The failed
+// entry is reported in the sync reply instead.
+func recovered(what, id string, fn func() error) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("%s of instance %s panicked: %v: %s", what, id, r, debug.Stack())
+			err = fmt.Errorf("internal error: %v", r)
+		}
+	}()
+	return fn()
 }
 
 // applyRunFlag brings one synced entry to its desired run state. A failed

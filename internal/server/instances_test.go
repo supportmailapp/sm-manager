@@ -1007,3 +1007,77 @@ func (s *lockProbeSink) PublishInstance(is status.InstanceState) {
 	}
 	s.h.mu.Unlock()
 }
+
+// panicRunner panics for the listed instance ids, like a runner with a bug would.
+type panicRunner struct {
+	*fakeRunner
+	panicStart map[string]bool
+	panicStop  map[string]bool
+}
+
+func (p *panicRunner) StartInstance(id string) error {
+	if p.panicStart[id] {
+		panic("start boom")
+	}
+	return p.fakeRunner.StartInstance(id)
+}
+
+func (p *panicRunner) StopInstance(id string) {
+	if p.panicStop[id] {
+		panic("stop boom")
+	}
+	p.fakeRunner.StopInstance(id)
+}
+
+func panicHub(start, stop map[string]bool) (*Hub, *panicRunner) {
+	h := testHub()
+	p := &panicRunner{fakeRunner: newFakeRunner(h), panicStart: start, panicStop: stop}
+	h.SetInstanceRunner(p)
+	return h, p
+}
+
+func TestSyncPanicInRunFlagFailsOnlyThatEntry(t *testing.T) {
+	h, r := panicHub(map[string]bool{"wl_bad": true}, nil)
+
+	resp := opCall(t, h, protocol.OpSyncInstances, `{"instances":[`+
+		`{"instanceId":"wl_bad","guildIds":["900"],"run":true},`+
+		`{"instanceId":"wl_ok","guildIds":["901"],"run":true}]}`)
+
+	if resp.OK || !strings.Contains(resp.Error, "wl_bad") || strings.Contains(resp.Error, "wl_ok") {
+		t.Fatalf("want an error naming only wl_bad, got %+v", resp)
+	}
+	if got := r.startedIDs(); len(got) != 1 || got[0] != "wl_ok" {
+		t.Fatalf("started = %v, want only wl_ok", got)
+	}
+	// The entry's lock was released: another op on it goes through.
+	r.panicStart["wl_bad"] = false
+	if resp := opCall(t, h, protocol.OpStartInstance, `{"instanceId":"wl_bad","guildIds":["900"]}`); !resp.OK {
+		t.Fatalf("instance stayed wedged: %+v", resp)
+	}
+}
+
+func TestSyncPanicInRemovalIsAFailedEntry(t *testing.T) {
+	h, _ := panicHub(nil, map[string]bool{"wl_old": true})
+	addInstance(h, "wl_old", "111")
+	h.SetInstanceState("wl_old", status.InstanceRunning, 0)
+
+	resp := opCall(t, h, protocol.OpSyncInstances, `{"instances":[]}`)
+
+	if resp.OK || !strings.Contains(resp.Error, "wl_old") {
+		t.Fatalf("want an error naming wl_old, got %+v", resp)
+	}
+}
+
+func TestPanickingStopReleasesTheInstanceLock(t *testing.T) {
+	h, r := panicHub(nil, map[string]bool{"wl_a": true})
+	addInstance(h, "wl_a", "111")
+	h.SetInstanceState("wl_a", status.InstanceRunning, 0)
+
+	if resp := opCall(t, h, protocol.OpStopInstance, `{"instanceId":"wl_a"}`); resp.OK {
+		t.Fatalf("a panicking stop must fail, got %+v", resp)
+	}
+	r.panicStop["wl_a"] = false
+	if resp := opCall(t, h, protocol.OpStopInstance, `{"instanceId":"wl_a"}`); !resp.OK {
+		t.Fatalf("instance stayed wedged after the panic: %+v", resp)
+	}
+}
