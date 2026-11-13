@@ -1,6 +1,6 @@
 // Package wirejson holds the encoding/json/v2 options that keep sm-manager's
 // JSON byte-compatible with what the v1 encoding/json package produced and
-// accepted, so the wire contract in PROTOCOL.md does not change.
+// accepted, so the wire contract in PROTOCOL.md (shared repo) does not change.
 //
 // v2 differs from v1 in defaults that matter here (nil slices as [], no HTML
 // escaping, case-sensitive member names, null overwriting scalars, strict

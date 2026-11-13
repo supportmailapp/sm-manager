@@ -2,7 +2,7 @@
 
 Go process supervisor and IPC hub for the SupportMail sharding system. It supervises cluster processes (each hosting several discord.js gateway shards), routes messages between clusters and clients (the API) over a Unix socket, drives zero-downtime cluster-by-cluster rollouts, and hosts the public statuspage WebSocket.
 
-The manager is **bot-agnostic on purpose**. It only understands twelve structural ops (`REGISTER`, `HEARTBEAT`, `QUIESCE`, `QUIESCED`, `DEPLOY`, `GET_CLUSTER_STATUSES`, and the instance ops `START_INSTANCE`, `STOP_INSTANCE`, `RESTART_INSTANCE`, `REMOVE_INSTANCE`, `SYNC_INSTANCES`, `GET_INSTANCE_STATUSES`) plus a config-supplied allow-list of business-op names, which it forwards without ever parsing the payload. A second bot is a different config, not a code change. See [`PROTOCOL.md`](PROTOCOL.md) for the wire contract.
+The manager is **bot-agnostic on purpose**. It only understands twelve structural ops (`REGISTER`, `HEARTBEAT`, `QUIESCE`, `QUIESCED`, `DEPLOY`, `GET_CLUSTER_STATUSES`, and the instance ops `START_INSTANCE`, `STOP_INSTANCE`, `RESTART_INSTANCE`, `REMOVE_INSTANCE`, `SYNC_INSTANCES`, `GET_INSTANCE_STATUSES`) plus a config-supplied allow-list of business-op names, which it forwards without ever parsing the payload. A second bot is a different config, not a code change. See [`PROTOCOL.md`](PROTOCOL.md) for the wire contract (canonical copy: the `shared` repo, `PROTOCOL.md`).
 
 ## Features
 

@@ -25,7 +25,7 @@ const (
 
 	// Instance ops: manager-answered ops that drive the instance registry, a set
 	// of separately supervised single-process bots that are not clusters. Sent by
-	// plain clients; replies carry the instance state. See PROTOCOL.md.
+	// plain clients; replies carry the instance state. See PROTOCOL.md\n\t// (canonical copy in the shared repo; this package is a hand-mirror of it).
 	OpStartInstance       OpCode = "START_INSTANCE"
 	OpStopInstance        OpCode = "STOP_INSTANCE"
 	OpRestartInstance     OpCode = "RESTART_INSTANCE"

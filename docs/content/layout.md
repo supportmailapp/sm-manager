@@ -30,7 +30,7 @@ Standard Go layout: the entrypoint is a thin `package main` under `cmd/`; all re
   ratelimit_test.go           trusted-proxy IP resolution + spoof rejection, handshake token bucket (burst/refill/per-IP), conn caps (per-IP + global), idle-bucket sweep
 ```
 
-Top-level: `config.example.json` (config template — SupportMail's 9 business ops + topology) and `PROTOCOL.md` (shared wire contract, copied verbatim into the bot and API repos).
+Top-level: `config.example.json` (config template — SupportMail's 9 business ops + topology) and `PROTOCOL.md` (a pointer stub: the canonical wire contract lives in the `shared` repo).
 
 ## Deliberate non-features
 

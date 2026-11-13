@@ -116,11 +116,11 @@ This is exactly what `DEPLOY` is for: a zero-downtime, cluster-by-cluster rollou
 
 ### `PROTOCOL.md` / the op-code contract
 
-1. Update `PROTOCOL.md` and its matching struct/type file in **all three** repos (`sm-manager`, `v2`/`supportmail`, `sm-api`) in the same sitting
+1. Update the canonical `PROTOCOL.md` in the `shared` repo, then its matching struct/type mirror in **all three** consumers (`sm-manager` `internal/protocol/protocol.go`, `v2` `src/protocol.ts`, `sm-api` `src/protocol.ts`) in the same sitting. `v2` and `sm-api` pick up the doc by bumping `@supportmailapp/shared`
 2. Rebuild and redeploy `sm-manager` per the Go-code section above
 3. Redeploy `v2` and `sm-api` per their own processes
 
-There's no codegen or shared package for this yet — the contract is hand-synced. A mismatch surfaces as `{ok:false, error:"unknown op"}` rejections at the manager, not a build error, so all three must move together.
+The doc has one canonical copy, but the code mirrors (Go structs, TS types) are still hand-synced: no codegen, and Go cannot import the shared package. A mismatch surfaces as `{ok:false, error:"unknown op"}` rejections at the manager, not a build error, so all three must move together.
 
 ## Notes
 
