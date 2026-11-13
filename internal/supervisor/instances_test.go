@@ -304,3 +304,44 @@ func TestInstanceNilSinkIsSafe(t *testing.T) {
 	s.StopInstance("wl_a") // must not panic, idempotent on a finished instance
 	s.StopInstance("wl_unknown")
 }
+
+// slotProbe records whether the supervisor still held the instance's slot when the
+// failed state was reported.
+type slotProbe struct {
+	s      *Supervisor
+	mu     sync.Mutex
+	failed bool
+	held   bool
+}
+
+func (p *slotProbe) SetInstanceState(id string, state status.InstanceRunState, code int) {
+	if state != status.InstanceFailed {
+		return
+	}
+	p.s.mu.Lock()
+	_, held := p.s.instances[id]
+	p.s.mu.Unlock()
+	p.mu.Lock()
+	p.failed, p.held = true, held
+	p.mu.Unlock()
+}
+
+func TestInstanceSlotIsFreeWhenFailedIsReported(t *testing.T) {
+	s, _ := newInstanceSup(t, "exit78", 5)
+	probe := &slotProbe{s: s}
+	s.SetInstanceStateSink(probe)
+	if err := s.StartInstance("wl_a"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "failed report", 10*time.Second, func() bool {
+		probe.mu.Lock()
+		defer probe.mu.Unlock()
+		return probe.failed
+	})
+	probe.mu.Lock()
+	held := probe.held
+	probe.mu.Unlock()
+	if held {
+		t.Fatal("slot still taken at the failed report: a START reacting to it would be a no-op")
+	}
+}

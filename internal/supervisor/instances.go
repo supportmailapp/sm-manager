@@ -74,14 +74,18 @@ func (s *Supervisor) StartInstance(instanceID string) error {
 	go func() {
 		defer s.wg.Done()
 		defer close(run.done)
-		defer func() {
+		// The map entry is dropped before the final state is reported (see runInstance), so a
+		// START that reacts to that report finds the slot free. The deferred call covers every
+		// other way out of runInstance.
+		release := func() {
 			s.mu.Lock()
 			if s.instances[instanceID] == run {
 				delete(s.instances, instanceID)
 			}
 			s.mu.Unlock()
-		}()
-		s.runInstance(ctx, instanceID)
+		}
+		defer release()
+		s.runInstance(ctx, instanceID, release)
 	}()
 	return nil
 }
@@ -103,8 +107,12 @@ func (s *Supervisor) StopInstance(instanceID string) {
 
 // runInstance keeps one instance process alive until ctx is cancelled or the
 // process exits with the "do not restart" code. Crashes restart with the same
-// backoff as clusters.
-func (s *Supervisor) runInstance(ctx context.Context, instanceID string) {
+// backoff as clusters. release frees the supervisor's slot for the instance; it
+// runs before the failed report, because a START reacting to that report while
+// the slot is still taken would be a no-op and leave the hub showing "starting"
+// with no process behind it. A stop-driven exit needs no such care: the hub
+// holds the instance's opMu and waits for this goroutine, so no START can overlap.
+func (s *Supervisor) runInstance(ctx context.Context, instanceID string, release func()) {
 	backoff := backoffInitial
 	for {
 		if ctx.Err() != nil {
@@ -126,6 +134,7 @@ func (s *Supervisor) runInstance(ctx context.Context, instanceID string) {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) && exitErr.ExitCode() == s.cfg.InstanceNoRestartExitCode {
 			log.Printf("instance %s exited with code %d, not restarting", instanceID, exitErr.ExitCode())
+			release()
 			s.reportInstance(instanceID, status.InstanceFailed, exitErr.ExitCode())
 			return
 		}
