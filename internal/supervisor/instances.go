@@ -74,18 +74,33 @@ func (s *Supervisor) StartInstance(instanceID string) error {
 	go func() {
 		defer s.wg.Done()
 		defer close(run.done)
-		// The map entry is dropped before the final state is reported (see runInstance), so a
-		// START that reacts to that report finds the slot free. The deferred call covers every
-		// other way out of runInstance.
+		// release drops the slot if it is still this run's. The deferred call covers
+		// every way out of runInstance except the failed exit, which uses
+		// releaseAndFail (see runInstance).
 		release := func() {
 			s.mu.Lock()
+			defer s.mu.Unlock()
 			if s.instances[instanceID] == run {
 				delete(s.instances, instanceID)
 			}
-			s.mu.Unlock()
 		}
 		defer release()
-		s.runInstance(ctx, instanceID, release)
+		// Frees the slot and reports failed in one critical section. A START (which
+		// needs s.mu) can therefore neither slip in between the two and have its
+		// "starting" overwritten by this stale "failed", nor run before the slot is
+		// free. The sink is called under s.mu: it only takes the hub's own locks and
+		// never calls back into the supervisor.
+		releaseAndFail := func(exitCode int) {
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			if s.instances[instanceID] == run {
+				delete(s.instances, instanceID)
+			}
+			if s.instanceSink != nil {
+				s.instanceSink.SetInstanceState(instanceID, status.InstanceFailed, exitCode)
+			}
+		}
+		s.runInstance(ctx, instanceID, releaseAndFail)
 	}()
 	return nil
 }
@@ -107,12 +122,15 @@ func (s *Supervisor) StopInstance(instanceID string) {
 
 // runInstance keeps one instance process alive until ctx is cancelled or the
 // process exits with the "do not restart" code. Crashes restart with the same
-// backoff as clusters. release frees the supervisor's slot for the instance; it
-// runs before the failed report, because a START reacting to that report while
-// the slot is still taken would be a no-op and leave the hub showing "starting"
-// with no process behind it. A stop-driven exit needs no such care: the hub
-// holds the instance's opMu and waits for this goroutine, so no START can overlap.
-func (s *Supervisor) runInstance(ctx context.Context, instanceID string, release func()) {
+// backoff as clusters. releaseAndFail frees the supervisor's slot for the
+// instance and reports it failed, atomically under s.mu. The slot must be free
+// when the report is made, because a START reacting to that report while the
+// slot is still taken would be a no-op and leave the hub showing "starting"
+// with no process behind it; and no START may land between the release and the
+// report, or the report would overwrite that START's "starting". A stop-driven
+// exit needs no such care: the hub holds the instance's opMu and waits for this
+// goroutine, so no START can overlap.
+func (s *Supervisor) runInstance(ctx context.Context, instanceID string, releaseAndFail func(exitCode int)) {
 	backoff := backoffInitial
 	for {
 		if ctx.Err() != nil {
@@ -134,8 +152,7 @@ func (s *Supervisor) runInstance(ctx context.Context, instanceID string, release
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) && exitErr.ExitCode() == s.cfg.InstanceNoRestartExitCode {
 			log.Printf("instance %s exited with code %d, not restarting", instanceID, exitErr.ExitCode())
-			release()
-			s.reportInstance(instanceID, status.InstanceFailed, exitErr.ExitCode())
+			releaseAndFail(exitErr.ExitCode())
 			return
 		}
 

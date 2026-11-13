@@ -38,10 +38,6 @@ func TestHelperProcess(t *testing.T) {
 			}
 		}
 		os.Exit(78)
-	case "sleep":
-		fmt.Println("ready")
-		time.Sleep(60 * time.Second)
-		os.Exit(0)
 	case "trapterm":
 		ch := make(chan os.Signal, 1)
 		signal.Notify(ch, syscall.SIGTERM)
@@ -202,6 +198,16 @@ func TestInstanceCrashRestarts(t *testing.T) {
 }
 
 func TestInstanceEnvContract(t *testing.T) {
+	// The contract says an instance gets no cluster variables, so the test must not
+	// inherit them from the shell that runs it. t.Setenv saves the original value
+	// and restores it on cleanup; the Unsetenv after it removes the variable
+	// itself, which an empty value would not (the helper reports set-but-empty too).
+	for _, k := range []string{"CLUSTER_ID", "SHARD_LIST", "TOTAL_SHARDS"} {
+		t.Setenv(k, "")
+		if err := os.Unsetenv(k); err != nil {
+			t.Fatal(err)
+		}
+	}
 	buf := captureLog(t)
 	s, rec := newInstanceSup(t, "env", 5)
 	if err := s.StartInstance("wl_a"); err != nil {
@@ -305,24 +311,30 @@ func TestInstanceNilSinkIsSafe(t *testing.T) {
 	s.StopInstance("wl_unknown")
 }
 
-// slotProbe records whether the supervisor still held the instance's slot when the
-// failed state was reported.
+// slotProbe records, at the moment the failed state is reported, whether the
+// supervisor still held the instance's slot and whether it held s.mu.
 type slotProbe struct {
-	s      *Supervisor
-	mu     sync.Mutex
-	failed bool
-	held   bool
+	s        *Supervisor
+	mu       sync.Mutex
+	failed   bool
+	held     bool
+	lockHeld bool
 }
 
 func (p *slotProbe) SetInstanceState(id string, state status.InstanceRunState, code int) {
 	if state != status.InstanceFailed {
 		return
 	}
-	p.s.mu.Lock()
+	// The failed report is made under s.mu (see releaseAndFail), so the map is
+	// read directly here: taking the lock again would deadlock. TryLock failing
+	// is the proof that the report and the slot release share one critical section.
 	_, held := p.s.instances[id]
-	p.s.mu.Unlock()
+	lockHeld := !p.s.mu.TryLock()
+	if !lockHeld {
+		p.s.mu.Unlock()
+	}
 	p.mu.Lock()
-	p.failed, p.held = true, held
+	p.failed, p.held, p.lockHeld = true, held, lockHeld
 	p.mu.Unlock()
 }
 
@@ -339,9 +351,12 @@ func TestInstanceSlotIsFreeWhenFailedIsReported(t *testing.T) {
 		return probe.failed
 	})
 	probe.mu.Lock()
-	held := probe.held
+	held, lockHeld := probe.held, probe.lockHeld
 	probe.mu.Unlock()
 	if held {
 		t.Fatal("slot still taken at the failed report: a START reacting to it would be a no-op")
+	}
+	if !lockHeld {
+		t.Fatal("failed was reported outside the critical section that frees the slot: a START could slip in between")
 	}
 }
