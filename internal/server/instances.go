@@ -497,31 +497,37 @@ func (h *Hub) startInstance(runner InstanceRunner, id string, guildIDs []string)
 		if err != nil {
 			return InstanceInfo{}, err
 		}
-		inst.opMu.Lock()
-		if !h.isCurrent(inst) {
-			// Removed between registering and winning the lock; register again.
-			inst.opMu.Unlock()
+		var startErr error
+		retry := false
+		func() {
+			inst.opMu.Lock()
+			defer inst.opMu.Unlock()
+			if !h.isCurrent(inst) {
+				// Removed between registering and winning the lock; register again.
+				retry = true
+				return
+			}
+
+			h.mu.RLock()
+			state := inst.state
+			h.mu.RUnlock()
+
+			if state != status.InstanceRunning && state != status.InstanceStarting {
+				startErr = h.spawnLocked(runner, id)
+				if startErr != nil && created && state == status.InstanceStopped {
+					// Nothing was ever started for an entry this call created: undo it.
+					h.mu.Lock()
+					if h.instances[id] == inst {
+						h.setGuildsLocked(inst, nil)
+						delete(h.instances, id)
+					}
+					h.mu.Unlock()
+				}
+			}
+		}()
+		if retry {
 			continue
 		}
-
-		h.mu.RLock()
-		state := inst.state
-		h.mu.RUnlock()
-
-		var startErr error
-		if state != status.InstanceRunning && state != status.InstanceStarting {
-			startErr = h.spawnLocked(runner, id)
-			if startErr != nil && created && state == status.InstanceStopped {
-				// Nothing was ever started for an entry this call created: undo it.
-				h.mu.Lock()
-				if h.instances[id] == inst {
-					h.setGuildsLocked(inst, nil)
-					delete(h.instances, id)
-				}
-				h.mu.Unlock()
-			}
-		}
-		inst.opMu.Unlock()
 		h.instanceChanged(id)
 		if startErr != nil {
 			return InstanceInfo{}, startErr
