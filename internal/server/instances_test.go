@@ -66,8 +66,8 @@ func TestInstanceRegisterBindsConn(t *testing.T) {
 	if len(got.GuildIDs) != 1 || got.GuildIDs[0] != "111" {
 		t.Fatalf("guildIds = %v", got.GuildIDs)
 	}
-	if len(h.clusters) != 0 {
-		t.Fatalf("instance register leaked into clusters: %v", h.clusters)
+	if n := clusterCount(h); n != 0 {
+		t.Fatalf("instance register leaked into %d clusters", n)
 	}
 }
 
@@ -82,7 +82,7 @@ func TestInstanceRegisterUnknownRejected(t *testing.T) {
 	if resp.OK || resp.Error != "unknown instance" {
 		t.Fatalf("want ok=false error=unknown instance, got %+v", resp)
 	}
-	if len(h.instances) != 0 || len(h.clusters) != 0 {
+	if instanceCount(h) != 0 || clusterCount(h) != 0 {
 		t.Fatal("rejected register must not create state")
 	}
 }
@@ -97,11 +97,11 @@ func TestClusterRegisterUnaffected(t *testing.T) {
 	if resp := decodeResp(t, fc.last()); !resp.OK {
 		t.Fatalf("cluster register not ok: %+v", resp)
 	}
-	if _, ok := h.clusters[0]; !ok {
+	if clusterOf(h, 0) == nil {
 		t.Fatal("cluster 0 not in registry")
 	}
-	if len(h.instances) != 0 {
-		t.Fatalf("cluster register created an instance entry: %v", h.instances)
+	if n := instanceCount(h); n != 0 {
+		t.Fatalf("cluster register created %d instance entries", n)
 	}
 }
 
@@ -112,8 +112,8 @@ func TestInstanceDisconnectKeepsMapping(t *testing.T) {
 
 	h.removeConn(c)
 
-	if h.guildInstance["111"] != "wl_a" || h.guildInstance["222"] != "wl_a" {
-		t.Fatalf("guild mapping lost: %v", h.guildInstance)
+	if m := guildMapping(h); m["111"] != "wl_a" || m["222"] != "wl_a" {
+		t.Fatalf("guild mapping lost: %v", m)
 	}
 	snap := h.snapshotInstances()
 	if len(snap) != 1 {
@@ -166,7 +166,7 @@ func TestInstanceHeartbeatStoresStatus(t *testing.T) {
 	if string(got.Status) != `{"guilds":1,"members":42}` {
 		t.Fatalf("status = %s", got.Status)
 	}
-	if len(h.clusters) != 0 {
+	if clusterCount(h) != 0 {
 		t.Fatal("instance heartbeat touched clusters")
 	}
 }
@@ -176,9 +176,7 @@ func TestInstanceReapDeadClearsConn(t *testing.T) {
 	addInstance(h, "wl_a", "111")
 	_, fc := registerInstance(t, h, "wl_a", 1)
 
-	h.mu.Lock()
-	h.instances["wl_a"].lastBeat = h.instances["wl_a"].lastBeat.Add(-time.Hour)
-	h.mu.Unlock()
+	ageInstanceBeat(h, "wl_a", time.Hour)
 	h.reapDead()
 
 	got := h.snapshotInstances()[0]
@@ -188,7 +186,7 @@ func TestInstanceReapDeadClearsConn(t *testing.T) {
 	if !fc.closed {
 		t.Fatal("reaped instance conn not closed")
 	}
-	if h.guildInstance["111"] != "wl_a" {
+	if guildOwner(h, "111") != "wl_a" {
 		t.Fatal("reap dropped guild mapping")
 	}
 }
@@ -206,7 +204,7 @@ func TestInstancesNotInClusterStatuses(t *testing.T) {
 func TestSetInstanceStateUnknownIsNoop(t *testing.T) {
 	h := testHub()
 	h.SetInstanceState("wl_nope", status.InstanceFailed, 1)
-	if len(h.instances) != 0 {
+	if instanceCount(h) != 0 {
 		t.Fatal("SetInstanceState created an entry")
 	}
 }
@@ -282,8 +280,8 @@ func TestGuildInRegisterNeverFallsBackToCluster(t *testing.T) {
 	if got := frameCount(clusterConn); got != clusterBefore {
 		t.Fatalf("cluster received %d frames; must never fall back", got-clusterBefore)
 	}
-	if len(h.pending) != 0 {
-		t.Fatalf("pending entry leaked: %v", h.pending)
+	if n := pendingCount(h); n != 0 {
+		t.Fatalf("%d pending entries leaked", n)
 	}
 }
 
@@ -451,10 +449,8 @@ func TestStartInstanceRegistersGuilds(t *testing.T) {
 	if err := json.Unmarshal(resp.Data, &info); err != nil || info.InstanceID != "wl_a" || info.State != status.InstanceStarting {
 		t.Fatalf("bad reply data %s (%v)", resp.Data, err)
 	}
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-	if h.guildInstance["111"] != "wl_a" || h.guildInstance["222"] != "wl_a" {
-		t.Fatalf("guild mapping = %v", h.guildInstance)
+	if m := guildMapping(h); m["111"] != "wl_a" || m["222"] != "wl_a" {
+		t.Fatalf("guild mapping = %v", m)
 	}
 	if r.startCount() != 1 {
 		t.Fatalf("runner starts = %d, want 1", r.startCount())
@@ -503,8 +499,8 @@ func TestStartInstanceGuildConflict(t *testing.T) {
 	if _, ok := instanceState(h, "wl_b"); ok {
 		t.Fatal("conflicting instance was registered")
 	}
-	if h.guildInstance["111"] != "wl_a" || r.startCount() != 0 {
-		t.Fatalf("mapping %v, starts %d", h.guildInstance, r.startCount())
+	if m := guildMapping(h); m["111"] != "wl_a" || r.startCount() != 0 {
+		t.Fatalf("mapping %v, starts %d", m, r.startCount())
 	}
 }
 
@@ -517,8 +513,8 @@ func TestStartInstanceRunnerErrorRollsBackNewEntry(t *testing.T) {
 	if resp.OK || resp.Error != "boom" {
 		t.Fatalf("want error boom, got %+v", resp)
 	}
-	if len(h.instances) != 0 || len(h.guildInstance) != 0 {
-		t.Fatalf("entry not rolled back: %v %v", h.instances, h.guildInstance)
+	if instanceCount(h) != 0 || len(guildMapping(h)) != 0 {
+		t.Fatalf("entry not rolled back: %d instances, mapping %v", instanceCount(h), guildMapping(h))
 	}
 }
 
@@ -534,7 +530,7 @@ func TestStopInstanceKeepsMapping(t *testing.T) {
 	if r.stopCount() != 1 {
 		t.Fatalf("runner stops = %d", r.stopCount())
 	}
-	if h.guildInstance["111"] != "wl_a" {
+	if guildOwner(h, "111") != "wl_a" {
 		t.Fatal("stop dropped the mapping")
 	}
 	got, ok := instanceState(h, "wl_a")
@@ -575,8 +571,8 @@ func TestRemoveInstanceDropsMapping(t *testing.T) {
 	if runner.stopCount() != 1 {
 		t.Fatalf("runner stops = %d", runner.stopCount())
 	}
-	if len(h.instances) != 0 || len(h.guildInstance) != 0 {
-		t.Fatalf("not dropped: %v %v", h.instances, h.guildInstance)
+	if instanceCount(h) != 0 || len(guildMapping(h)) != 0 {
+		t.Fatalf("not dropped: %d instances, mapping %v", instanceCount(h), guildMapping(h))
 	}
 	// With the mapping gone the guild routes by shard arithmetic again.
 	before := frameCount(clusterConn)
@@ -645,18 +641,17 @@ func TestSyncStartsStoppedButNotFailed(t *testing.T) {
 	if err := json.Unmarshal(resp.Data, &infos); err != nil || len(infos) != 3 {
 		t.Fatalf("reply data %s (%v)", resp.Data, err)
 	}
-	h.mu.RLock()
-	defer h.mu.RUnlock()
+	m := guildMapping(h)
 	for g, want := range map[string]string{"900": "wl_failed", "901": "wl_new", "902": "wl_off", "903": "wl_off"} {
-		if h.guildInstance[g] != want {
-			t.Fatalf("guildInstance[%s] = %q, want %q", g, h.guildInstance[g], want)
+		if m[g] != want {
+			t.Fatalf("guildInstance[%s] = %q, want %q", g, m[g], want)
 		}
 	}
-	if h.instances["wl_failed"].state != status.InstanceFailed {
+	if instanceRunState(h, "wl_failed") != status.InstanceFailed {
 		t.Fatal("failed instance was touched")
 	}
-	if h.instances["wl_off"].state != status.InstanceStopped {
-		t.Fatalf("wl_off state = %s", h.instances["wl_off"].state)
+	if got := instanceRunState(h, "wl_off"); got != status.InstanceStopped {
+		t.Fatalf("wl_off state = %s", got)
 	}
 }
 
@@ -685,8 +680,8 @@ func TestSyncRemovesUnlisted(t *testing.T) {
 	if r.stopCount() != 1 {
 		t.Fatalf("runner stops = %d", r.stopCount())
 	}
-	if len(h.instances) != 0 || len(h.guildInstance) != 0 {
-		t.Fatalf("not removed: %v %v", h.instances, h.guildInstance)
+	if instanceCount(h) != 0 || len(guildMapping(h)) != 0 {
+		t.Fatalf("not removed: %d instances, mapping %v", instanceCount(h), guildMapping(h))
 	}
 }
 
@@ -700,7 +695,7 @@ func TestSyncRejectsGuildListedTwice(t *testing.T) {
 	if resp.OK {
 		t.Fatalf("want error, got %+v", resp)
 	}
-	if len(h.instances) != 0 || r.startCount() != 0 {
+	if instanceCount(h) != 0 || r.startCount() != 0 {
 		t.Fatal("invalid sync had side effects")
 	}
 }
@@ -717,8 +712,8 @@ func TestSyncMovesGuildBetweenListedInstances(t *testing.T) {
 	if !resp.OK {
 		t.Fatalf("not ok: %+v", resp)
 	}
-	if h.guildInstance["111"] != "wl_b" || h.guildInstance["222"] != "wl_a" {
-		t.Fatalf("mapping = %v", h.guildInstance)
+	if m := guildMapping(h); m["111"] != "wl_b" || m["222"] != "wl_a" {
+		t.Fatalf("mapping = %v", m)
 	}
 }
 
@@ -750,7 +745,7 @@ func TestInstanceOpWithoutRunner(t *testing.T) {
 	if resp.OK || resp.Error != "no instance runner configured" {
 		t.Fatalf("want no instance runner configured, got %+v", resp)
 	}
-	if len(h.instances) != 0 {
+	if instanceCount(h) != 0 {
 		t.Fatal("entry registered without a runner")
 	}
 }
@@ -891,9 +886,7 @@ func TestInstanceDisconnectAndReapPublish(t *testing.T) {
 
 	addInstance(h, "wl_b", "222")
 	registerInstance(t, h, "wl_b", 1)
-	h.mu.Lock()
-	h.instances["wl_b"].lastBeat = h.instances["wl_b"].lastBeat.Add(-time.Hour)
-	h.mu.Unlock()
+	ageInstanceBeat(h, "wl_b", time.Hour)
 	h.reapDead()
 	got, _ = sink.lastInstPub("wl_b")
 	if got.Alive || got.State != status.InstanceStarting {
@@ -978,35 +971,55 @@ func TestInstanceHookRunsOutsideHubLock(t *testing.T) {
 	h := testHub()
 	sink := &lockProbeSink{h: h}
 	h.SetStatusSink(sink)
+	runner := newFakeRunner(h)
+	h.SetInstanceRunner(runner)
 	addInstance(h, "wl_a", "111")
 
 	registerInstance(t, h, "wl_a", 1)
 	h.SetInstanceState("wl_a", status.InstanceFailed, 1)
-
 	if sink.calls == 0 {
-		t.Fatal("sink never called")
+		t.Fatal("PublishInstance never called")
+	}
+
+	h.removeInstance(runner, "wl_a")
+	if sink.removeCalls == 0 {
+		t.Fatal("RemoveInstance never called")
 	}
 	if sink.heldLock {
 		t.Fatal("sink called while h.mu was held")
 	}
 }
 
-// lockProbeSink checks that h.mu can be taken for writing during a call.
+// lockProbeSink checks that h.mu can be taken for writing during every sink
+// call, instance or cluster, publish or removal.
 type lockProbeSink struct {
 	fakeSink
-	h        *Hub
-	calls    int
-	heldLock bool
+	h           *Hub
+	calls       int // PublishInstance
+	removeCalls int // RemoveInstance
+	heldLock    bool
 }
 
-func (s *lockProbeSink) PublishInstance(is status.InstanceState) {
-	s.calls++
+func (s *lockProbeSink) probe() {
 	if !s.h.mu.TryLock() {
 		s.heldLock = true
 		return
 	}
 	s.h.mu.Unlock()
 }
+
+func (s *lockProbeSink) PublishInstance(is status.InstanceState) {
+	s.calls++
+	s.probe()
+}
+
+func (s *lockProbeSink) RemoveInstance(id string) {
+	s.removeCalls++
+	s.probe()
+}
+
+func (s *lockProbeSink) Publish(cs status.ClusterState) { s.probe() }
+func (s *lockProbeSink) Remove(cid int)                 { s.probe() }
 
 // panicRunner panics for the listed instance ids, like a runner with a bug would.
 type panicRunner struct {
@@ -1065,6 +1078,32 @@ func TestSyncPanicInRemovalIsAFailedEntry(t *testing.T) {
 
 	if resp.OK || !strings.Contains(resp.Error, "wl_old") {
 		t.Fatalf("want an error naming wl_old, got %+v", resp)
+	}
+	// The entry is gone from the routing register all the same, so a later entry
+	// can claim its guild.
+	if instanceCount(h) != 0 || len(guildMapping(h)) != 0 {
+		t.Fatalf("panicked removal left %d instances, mapping %v", instanceCount(h), guildMapping(h))
+	}
+	if resp := opCall(t, h, protocol.OpStartInstance, `{"instanceId":"wl_new","guildIds":["111"]}`); !resp.OK {
+		t.Fatalf("guild still held after the panicked removal: %+v", resp)
+	}
+}
+
+func TestPanickingStopStillDropsOnRemove(t *testing.T) {
+	h, _ := panicHub(nil, map[string]bool{"wl_a": true})
+	sink := &fakeSink{}
+	h.SetStatusSink(sink)
+	addInstance(h, "wl_a", "111")
+	h.SetInstanceState("wl_a", status.InstanceRunning, 0)
+
+	if resp := opCall(t, h, protocol.OpRemoveInstance, `{"instanceId":"wl_a"}`); resp.OK {
+		t.Fatalf("a panicking stop must fail the op, got %+v", resp)
+	}
+	if instanceCount(h) != 0 || len(guildMapping(h)) != 0 {
+		t.Fatalf("entry survived: %d instances, mapping %v", instanceCount(h), guildMapping(h))
+	}
+	if !sink.instRemoved("wl_a") {
+		t.Fatal("the status feed was not told about the removal")
 	}
 }
 

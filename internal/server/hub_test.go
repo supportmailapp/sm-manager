@@ -49,6 +49,79 @@ func testHub() *Hub {
 	})
 }
 
+// Locked views of hub state. Tests must read the registries through these (or
+// under h.mu themselves): the hub's own goroutines may be writing them.
+
+func clusterOf(h *Hub, id int) *Conn {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.clusters[id]
+}
+
+func clusterCount(h *Hub) int {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return len(h.clusters)
+}
+
+func generationOf(h *Hub, gen, id int) *Conn {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.generations[gen][id]
+}
+
+func pendingCount(h *Hub) int {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return len(h.pending)
+}
+
+func instanceCount(h *Hub) int {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return len(h.instances)
+}
+
+func guildOwner(h *Hub, guildID string) string {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.guildInstance[guildID]
+}
+
+func guildMapping(h *Hub) map[string]string {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	out := make(map[string]string, len(h.guildInstance))
+	for g, id := range h.guildInstance {
+		out[g] = id
+	}
+	return out
+}
+
+// instanceRunState is the raw state of one entry, "" when there is none.
+func instanceRunState(h *Hub, id string) status.InstanceRunState {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	if inst := h.instances[id]; inst != nil {
+		return inst.state
+	}
+	return ""
+}
+
+// ageInstanceBeat moves an instance's last heartbeat into the past.
+func ageInstanceBeat(h *Hub, id string, by time.Duration) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	inst := h.instances[id]
+	inst.lastBeat = inst.lastBeat.Add(-by)
+}
+
+func connStatus(c *Conn) string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return string(c.status)
+}
+
 func decodeResp(t *testing.T, raw []byte) protocol.ShardResponse {
 	t.Helper()
 	var r protocol.ShardResponse
@@ -70,7 +143,7 @@ func TestRegisterMarksClusterAlive(t *testing.T) {
 	if resp := decodeResp(t, fc.last()); !resp.OK {
 		t.Fatalf("register not ok: %+v", resp)
 	}
-	if _, ok := h.clusters[0]; !ok {
+	if clusterOf(h, 0) == nil {
 		t.Fatal("cluster 0 not in registry")
 	}
 }
@@ -131,7 +204,7 @@ func TestBusinessOpForwardedAndResponseRouted(t *testing.T) {
 	if !resp.OK || resp.ID != "abc" {
 		t.Fatalf("api did not get routed response: %+v", resp)
 	}
-	if _, still := h.pending["abc"]; still {
+	if pendingCount(h) != 0 {
 		t.Fatal("pending entry not cleared")
 	}
 }
@@ -201,11 +274,11 @@ func TestRegisterTagsGeneration(t *testing.T) {
 	if gen != 3 {
 		t.Fatalf("conn generation = %d, want 3", gen)
 	}
-	if h.generations[3][0] != c {
+	if generationOf(h, 3, 0) != c {
 		t.Fatal("cluster 0 not tracked under generation 3")
 	}
 	// Still routable via the flat registry regardless of generation.
-	if h.clusters[0] != c {
+	if clusterOf(h, 0) != c {
 		t.Fatal("cluster 0 not in routing registry")
 	}
 }
@@ -432,7 +505,7 @@ func TestRegisterDoesNotStealActiveRouting(t *testing.T) {
 	if got, _ := h.resolveTarget(&protocol.Target{ClusterId: &cid}); got != old {
 		t.Fatal("gen 2 register stole active routing before cutover — duplicate-routing window")
 	}
-	if h.generations[2][0] != fresh {
+	if generationOf(h, 2, 0) != fresh {
 		t.Fatal("gen 2 conn not tracked under its generation")
 	}
 

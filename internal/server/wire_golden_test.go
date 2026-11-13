@@ -113,8 +113,8 @@ func TestWireGoldenClusterStatuses(t *testing.T) {
 	c.mu.Lock()
 	c.lastBeat = time.UnixMilli(1700000000123)
 	c.mu.Unlock()
-	if string(c.status) != `{ "guilds" : 2, "note":"<b>&" }` {
-		t.Fatalf("stored status not verbatim: %q", c.status)
+	if got := connStatus(c); got != `{ "guilds" : 2, "note":"<b>&" }` {
+		t.Fatalf("stored status not verbatim: %q", got)
 	}
 	raw(h, cc, `{"id":"s2","op":"GET_CLUSTER_STATUSES","payload":{}}`)
 	want := bs(`{"id":"s2","ok":true,"data":[{"clusterId":3,"shards":[6,7],"generation":2,"alive":true,"lastBeat":1700000000123,"status":{"guilds":2,"note":"BSu003cbBSu003eBSu0026"}}]}`)
@@ -341,18 +341,18 @@ func TestWireGoldenHeartbeatPayloadForms(t *testing.T) {
 
 	// No payload member: nothing stored.
 	raw(h, c, `{"id":"h","op":"HEARTBEAT"}`)
-	if len(c.status) != 0 {
-		t.Fatalf("status stored for missing payload: %q", c.status)
+	if got := connStatus(c); got != "" {
+		t.Fatalf("status stored for missing payload: %q", got)
 	}
 	// An explicit null payload is stored as the literal null, as before.
 	raw(h, c, `{"id":"h","op":"HEARTBEAT","payload":null}`)
-	if string(c.status) != `null` {
-		t.Fatalf("status = %q, want null", c.status)
+	if got := connStatus(c); got != `null` {
+		t.Fatalf("status = %q, want null", got)
 	}
 	// Whitespace inside the payload is stored exactly as received.
 	raw(h, c, `{"id":"h","op":"HEARTBEAT","payload":  { "a" : 1 }  }`)
-	if string(c.status) != `{ "a" : 1 }` {
-		t.Fatalf("status = %q", c.status)
+	if got := connStatus(c); got != `{ "a" : 1 }` {
+		t.Fatalf("status = %q", got)
 	}
 }
 

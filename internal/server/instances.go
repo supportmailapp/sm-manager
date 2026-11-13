@@ -75,6 +75,8 @@ func (h *Hub) SetInstanceState(instanceID string, state status.InstanceRunState,
 // its own lock rather than trusting the caller: a present entry is published
 // (state only, never its guild ids), an absent one is a removal.
 func (h *Hub) instanceChanged(instanceID string) {
+	h.pubMu.Lock()
+	defer h.pubMu.Unlock()
 	h.mu.RLock()
 	sink := h.statusSink
 	var (
@@ -544,9 +546,12 @@ func (h *Hub) removeInstance(runner InstanceRunner, id string) {
 	if inst == nil {
 		return
 	}
-	func() {
-		defer inst.opMu.Unlock()
-		runner.StopInstance(id)
+	// Deferred, so the entry is dropped (and the feed told) even when the
+	// runner panics: a surviving entry would keep its guilds mapped and make
+	// every later entry claiming one of them conflict.
+	defer h.instanceChanged(id)
+	defer inst.opMu.Unlock()
+	defer func() {
 		h.mu.Lock()
 		defer h.mu.Unlock()
 		if h.instances[id] == inst {
@@ -554,7 +559,7 @@ func (h *Hub) removeInstance(runner InstanceRunner, id string) {
 			delete(h.instances, id)
 		}
 	}()
-	h.instanceChanged(id)
+	runner.StopInstance(id)
 }
 
 // syncInstances implements SYNC_INSTANCES: make the registry match the list.
@@ -563,6 +568,11 @@ func (h *Hub) removeInstance(runner InstanceRunner, id string) {
 //  3. Register all listed entries in one atomic step.
 //  4. Apply each entry's run flag, concurrently.
 func (h *Hub) syncInstances(runner InstanceRunner, entries []InstanceSyncEntry) error {
+	// One SYNC at a time: two overlapping ones would each compute their stale
+	// set and register their list against a registry the other is rewriting.
+	h.syncMu.Lock()
+	defer h.syncMu.Unlock()
+
 	listed := make(map[string]struct{}, len(entries))
 	owner := make(map[string]string)
 	guilds := make([][]string, len(entries))

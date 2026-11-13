@@ -104,6 +104,16 @@ type Hub struct {
 	instanceRunner InstanceRunner // set once via SetInstanceRunner; nil until the supervisor wires itself in
 
 	statusSink status.Sink // set once via SetStatusSink; nil when the statuspage WS is disabled
+
+	// pubMu serializes status publishes. A publish reads the current state and
+	// then hands it to the sink; without this, two publishes for one id could
+	// interleave and the older read be delivered last, leaving a stale entry (or
+	// a ghost one after a removal) in the feed. Lock order: pubMu, then mu.
+	pubMu sync.Mutex
+
+	// syncMu lets one SYNC_INSTANCES run at a time. Lock order: syncMu, then an
+	// instance's opMu, then mu.
+	syncMu sync.Mutex
 }
 
 func NewHub(cfg *config.Config) *Hub {
@@ -144,6 +154,8 @@ func (h *Hub) SetStatusSink(s status.Sink) {
 // hub lock. Deltas reflect the active (routed) generation only — during a
 // rollout a not-yet-promoted new generation isn't shown until PromoteClusters.
 func (h *Hub) publishActive(clusterID int) {
+	h.pubMu.Lock()
+	defer h.pubMu.Unlock()
 	h.mu.RLock()
 	sink := h.statusSink
 	c := h.clusters[clusterID]
@@ -329,6 +341,26 @@ type registerPayload struct {
 	Generation int   `json:"generation"`
 }
 
+// errAlreadyRegistered is the reply to a REGISTER that would change what a
+// connection is bound to. Its text is part of the wire contract.
+const errAlreadyRegistered = "connection already registered as a different peer"
+
+// rebinds reports whether registering c as the given identity would change an
+// identity it already holds. Registering again as the very same identity stays
+// allowed (it refreshes the entry). An instance passes instanceID (clusterID
+// nil); a cluster passes clusterID and generation (instanceID nil).
+func (c *Conn) rebinds(instanceID *string, clusterID *int, generation int) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	switch {
+	case c.instanceID != nil:
+		return instanceID == nil || *c.instanceID != *instanceID
+	case c.clusterID != nil:
+		return clusterID == nil || *c.clusterID != *clusterID || c.generation != generation
+	}
+	return false
+}
+
 func (h *Hub) handleRegister(c *Conn, req *protocol.ShardRequest) {
 	// Probe first: an instanceId means the instance path, otherwise it is a cluster.
 	var probe instanceRegisterPayload
@@ -337,12 +369,20 @@ func (h *Hub) handleRegister(c *Conn, req *protocol.ShardRequest) {
 		return
 	}
 	if probe.InstanceID != "" {
+		if c.rebinds(&probe.InstanceID, nil, 0) {
+			_ = c.send(protocol.ShardResponse{ID: req.ID, OK: false, Error: errAlreadyRegistered})
+			return
+		}
 		h.handleInstanceRegister(c, req, probe)
 		return
 	}
 	var p registerPayload
 	if err := json.Unmarshal(req.Payload, &p, wirejson.Wire); err != nil {
 		_ = c.send(protocol.ShardResponse{ID: req.ID, OK: false, Error: "bad REGISTER payload"})
+		return
+	}
+	if c.rebinds(nil, &p.ClusterID, p.Generation) {
+		_ = c.send(protocol.ShardResponse{ID: req.ID, OK: false, Error: errAlreadyRegistered})
 		return
 	}
 	c.mu.Lock()
