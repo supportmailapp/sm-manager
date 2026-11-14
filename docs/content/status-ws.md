@@ -15,7 +15,7 @@ Instances (separately supervised single-process bots) are published in their own
 - A changed instance arrives as a `delta` with `instance` (an upsert of that `InstanceState`), never as `cluster`.
 - An instance that was removed arrives as a `delta` with `removedInstance` (its `instanceId`), never as `removed`.
 
-An `InstanceState` is `instanceId`, `state` (`stopped`, `starting`, `running` or `failed`), `generation`, `alive`, `lastBeat`, `exitCode` (only when non-zero) and the opaque `status` from the instance's HEARTBEAT. It carries **no guild ids**: this feed is public and the list of guilds an instance serves is not. Guild ids are only returned on the internal socket (`GET_INSTANCE_STATUSES`).
+An `InstanceState` is `instanceId`, `state` (`stopped`, `starting`, `running` or `failed`), `generation`, `alive`, `lastBeat` and `exitCode` (only when non-zero). The instance's opaque HEARTBEAT `status` payload is dropped before publishing, in snapshot and delta (`PublishInstance` clears it), so the feed reveals nothing about which servers an instance serves; the internal `GET_INSTANCE_STATUSES` reply keeps it. It carries **no guild ids**: this feed is public and the list of guilds an instance serves is not. Guild ids are only returned on the internal socket (`GET_INSTANCE_STATUSES`).
 
 ## Trust boundary — it's public
 
