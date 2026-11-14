@@ -731,6 +731,25 @@ func TestGetInstanceStatusesReplies(t *testing.T) {
 	}
 }
 
+// The public feed drops the heartbeat payload in the broadcaster; the hub and
+// GET_INSTANCE_STATUSES must keep serving it to internal clients.
+func TestGetInstanceStatusesKeepsStatus(t *testing.T) {
+	h := testHub()
+	addInstance(h, "wl_a", "111")
+	c, _ := registerInstance(t, h, "wl_a", 1)
+	sendFrame(t, h, c, "hb", protocol.OpHeartbeat, `{"instanceId":"wl_a","status":{"guilds":1,"members":42}}`)
+
+	resp := opCall(t, h, protocol.OpGetInstanceStatuses, `{}`)
+
+	var infos []InstanceInfo
+	if !resp.OK || json.Unmarshal(resp.Data, &infos) != nil || len(infos) != 1 {
+		t.Fatalf("resp %+v", resp)
+	}
+	if string(infos[0].Status) != `{"guilds":1,"members":42}` {
+		t.Fatalf("status = %s", infos[0].Status)
+	}
+}
+
 func TestGetInstanceStatusesEmptyIsArray(t *testing.T) {
 	h := testHub() // no runner needed
 	resp := opCall(t, h, protocol.OpGetInstanceStatuses, `{}`)

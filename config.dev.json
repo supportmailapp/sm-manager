@@ -29,7 +29,8 @@
     "SYNC_GUILDS_WITH_DB",
     "HANDLE_DM_REPORT",
     "REFRESH_WHITELABEL_GUILDS",
-    "CLOSE_ALL_TICKETS"
+    "CLOSE_ALL_TICKETS",
+    "SET_PRESENCE"
   ],
   "sentryDsn": "https://818c0e02e7a27a2ef73e38494dc4f513@o4508704165265408.ingest.de.sentry.io/4512092129722448",
   "sentryEnvironment": "development"

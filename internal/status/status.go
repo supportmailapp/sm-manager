@@ -105,8 +105,11 @@ func (b *Broadcaster) Remove(clusterID int) {
 }
 
 // PublishInstance records an instance's new state and fans a delta out to all
-// clients. Called by the hub on every instance state change.
+// clients. Called by the hub on every instance state change. The public view
+// never carries the instance's heartbeat payload, so Status is dropped here
+// (the hub keeps it for GET_INSTANCE_STATUSES).
 func (b *Broadcaster) PublishInstance(is InstanceState) {
+	is.Status = nil
 	msg := marshal(Event{Type: "delta", Instance: &is})
 	b.mu.Lock()
 	b.insts[is.InstanceID] = is
@@ -196,9 +199,11 @@ const (
 	InstanceFailed   InstanceRunState = "failed"
 )
 
-// InstanceState is the manager's public view of one instance. Status is the
-// opaque payload the instance attaches to its HEARTBEAT, forwarded verbatim.
-// It carries no guild ids: the public feed must not list what an instance owns.
+// InstanceState is the manager's view of one instance. Status is the opaque
+// payload the instance attaches to its HEARTBEAT; the hub keeps it for
+// GET_INSTANCE_STATUSES, but in the public view Status is never sent for
+// instances (PublishInstance clears it). It carries no guild ids: the public
+// feed must not list what an instance owns.
 type InstanceState struct {
 	InstanceID string           `json:"instanceId"`
 	State      InstanceRunState `json:"state"`

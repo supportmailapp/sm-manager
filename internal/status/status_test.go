@@ -2,6 +2,7 @@ package status
 
 import (
 	"context"
+	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"net/http"
 	"net/http/httptest"
@@ -256,5 +257,51 @@ func TestRemoveInstanceDelta(t *testing.T) {
 	snap := recvEvent(t, late)
 	if len(snap.Instances) != 0 {
 		t.Fatalf("removed instance still in snapshot: %+v", snap.Instances)
+	}
+}
+
+// The public feed never carries the opaque heartbeat payload of an instance.
+func TestPublishInstanceOmitsStatus(t *testing.T) {
+	b := NewBroadcaster()
+	c := &client{send: make(chan []byte, 8)}
+	b.addClient(c)
+	<-c.send // snapshot
+
+	b.PublishInstance(InstanceState{
+		InstanceID: "wl_a",
+		State:      InstanceRunning,
+		Alive:      true,
+		Status:     jsontext.Value(`{"status":{"members":42}}`),
+	})
+	raw := string(<-c.send)
+	if strings.Contains(raw, `"status"`) || strings.Contains(raw, "members") {
+		t.Fatalf("instance delta must not carry the status payload: %s", raw)
+	}
+	d := Event{}
+	if err := json.Unmarshal([]byte(raw), &d); err != nil {
+		t.Fatal(err)
+	}
+	if d.Instance == nil || d.Instance.InstanceID != "wl_a" || d.Instance.State != InstanceRunning {
+		t.Fatalf("instance fields lost: %s", raw)
+	}
+}
+
+func TestSnapshotInstancesOmitStatus(t *testing.T) {
+	b := NewBroadcaster()
+	b.PublishInstance(InstanceState{
+		InstanceID: "wl_a",
+		State:      InstanceRunning,
+		Alive:      true,
+		Status:     jsontext.Value(`{"status":{"members":42}}`),
+	})
+
+	c := &client{send: make(chan []byte, 8)}
+	b.addClient(c)
+	raw := string(<-c.send)
+	if !strings.Contains(raw, `"wl_a"`) {
+		t.Fatalf("snapshot lost the instance: %s", raw)
+	}
+	if strings.Contains(raw, `"status"`) || strings.Contains(raw, "members") {
+		t.Fatalf("snapshot instance must not carry the status payload: %s", raw)
 	}
 }

@@ -36,8 +36,8 @@ export type InstanceRunState = "stopped" | "starting" | "running" | "failed";
 
 /**
  * The manager's public view of one instance (a separately supervised
- * single-process bot). Never carries guild ids. `status` is the opaque payload
- * from the instance's HEARTBEAT, forwarded verbatim.
+ * single-process bot). Never carries guild ids. Public view: `status` is never
+ * sent for instances (the heartbeat payload stays internal to the manager).
  */
 export interface InstanceState {
   instanceId: string;
@@ -48,8 +48,6 @@ export interface InstanceState {
   lastBeat: number;
   /** Last exit code. Omitted when 0. */
   exitCode?: number;
-  /** Opaque bot-defined payload. Omitted when absent. */
-  status?: unknown;
 }
 
 /**

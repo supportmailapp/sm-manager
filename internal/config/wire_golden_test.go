@@ -38,7 +38,7 @@ func TestWireGoldenExampleConfig(t *testing.T) {
 		SpawnDir:                  "../bot",
 		ShardsPerCluster:          2,
 		ClusterCount:              1,
-		AllowedBusinessOps:        []string{"VERIFY_GUILD_MEMBERSHIP", "GET_GUILD_USERS", "CHECK_MENTION_PERMISSIONS", "SETUP_TICKETS", "GET_FORUM_TAGS", "SET_FORUM_TAGS", "GET_GUILD_LIST", "SYNC_GUILDS_WITH_DB", "HANDLE_DM_REPORT", "", "CLOSE_ALL_TICKETS"},
+		AllowedBusinessOps:        []string{"VERIFY_GUILD_MEMBERSHIP", "GET_GUILD_USERS", "CHECK_MENTION_PERMISSIONS", "SETUP_TICKETS", "GET_FORUM_TAGS", "SET_FORUM_TAGS", "GET_GUILD_LIST", "SYNC_GUILDS_WITH_DB", "HANDLE_DM_REPORT", "", "CLOSE_ALL_TICKETS", "SET_PRESENCE"},
 		HeartbeatTimeoutSecs:      30,
 		Generation:                0,
 		DeployTimeoutSecs:         180,
@@ -58,7 +58,7 @@ func TestWireGoldenExampleConfig(t *testing.T) {
 	}
 	// The tenth op is a bot-specific name; check its shape instead of
 	// repeating the whole file in the test.
-	if len(got.AllowedBusinessOps) != 11 || !strings.HasPrefix(got.AllowedBusinessOps[9], "REFRESH_") || !strings.HasSuffix(got.AllowedBusinessOps[9], "_GUILDS") {
+	if len(got.AllowedBusinessOps) != 12 || !strings.HasPrefix(got.AllowedBusinessOps[9], "REFRESH_") || !strings.HasSuffix(got.AllowedBusinessOps[9], "_GUILDS") {
 		t.Fatalf("allowedBusinessOps = %v", got.AllowedBusinessOps)
 	}
 	want.AllowedBusinessOps[9] = got.AllowedBusinessOps[9]

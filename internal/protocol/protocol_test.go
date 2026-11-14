@@ -27,6 +27,7 @@ func TestIsStructural(t *testing.T) {
 		"REFRESH_WHITELABEL_GUILDS",
 		"CLOSE_ALL_TICKETS",
 		"GET_GUILD_LIST",
+		"SET_PRESENCE",
 	}
 	for _, op := range notStructural {
 		if IsStructural(op) {
