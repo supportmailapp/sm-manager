@@ -4,6 +4,8 @@ import (
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
+	"fmt"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -1119,4 +1121,154 @@ func TestPanickingStopReleasesTheInstanceLock(t *testing.T) {
 	if resp := opCall(t, h, protocol.OpStopInstance, `{"instanceId":"wl_a"}`); !resp.OK {
 		t.Fatalf("instance stayed wedged after the panic: %+v", resp)
 	}
+}
+
+// seedInstances registers instances through START_INSTANCE and then forces
+// each one into the wanted state.
+func seedInstances(t *testing.T, h *Hub, states map[string]status.InstanceRunState) {
+	t.Helper()
+	n := 100
+	for id, st := range states {
+		n++
+		opCall(t, h, protocol.OpStartInstance, fmt.Sprintf(`{"instanceId":%q,"guildIds":["%d"]}`, id, n))
+		h.SetInstanceState(id, st, 0)
+	}
+}
+
+func TestRunningInstanceIDsOnlyRunningAndStarting(t *testing.T) {
+	h, _ := opHub()
+	seedInstances(t, h, map[string]status.InstanceRunState{
+		"wl_a": status.InstanceRunning,
+		"wl_b": status.InstanceStarting,
+		"wl_c": status.InstanceStopped,
+		"wl_d": status.InstanceFailed,
+	})
+
+	got := h.RunningInstanceIDs()
+
+	if !reflect.DeepEqual(got, []string{"wl_a", "wl_b"}) {
+		t.Fatalf("RunningInstanceIDs = %v, want [wl_a wl_b]", got)
+	}
+}
+
+func TestRunningInstanceIDsEmptyIsNotNil(t *testing.T) {
+	h, _ := opHub()
+	if got := h.RunningInstanceIDs(); got == nil || len(got) != 0 {
+		t.Fatalf("RunningInstanceIDs = %#v, want empty non-nil", got)
+	}
+}
+
+func TestRestartRunningInstanceStopsThenStarts(t *testing.T) {
+	h, r := opHub()
+	seedInstances(t, h, map[string]status.InstanceRunState{"wl_a": status.InstanceRunning})
+
+	restarted, err := h.RestartRunningInstance("wl_a")
+
+	if err != nil || !restarted {
+		t.Fatalf("restarted=%v err=%v, want true,nil", restarted, err)
+	}
+	if r.stopCount() != 1 || r.startCount() != 2 {
+		t.Fatalf("stops %d starts %d, want 1 and 2", r.stopCount(), r.startCount())
+	}
+	if got, _ := instanceState(h, "wl_a"); got.State != status.InstanceStarting {
+		t.Fatalf("state = %s, want starting", got.State)
+	}
+}
+
+func TestRestartRunningInstanceSkipsStoppedFailedAndUnknown(t *testing.T) {
+	h, r := opHub()
+	seedInstances(t, h, map[string]status.InstanceRunState{
+		"wl_stopped": status.InstanceStopped,
+		"wl_failed":  status.InstanceFailed,
+	})
+	startsBefore, stopsBefore := r.startCount(), r.stopCount()
+
+	for _, id := range []string{"wl_stopped", "wl_failed", "wl_nope"} {
+		restarted, err := h.RestartRunningInstance(id)
+		if err != nil || restarted {
+			t.Fatalf("%s: restarted=%v err=%v, want false,nil", id, restarted, err)
+		}
+	}
+	if r.startCount() != startsBefore || r.stopCount() != stopsBefore {
+		t.Fatal("runner called for a non-running instance")
+	}
+	if got, _ := instanceState(h, "wl_failed"); got.State != status.InstanceFailed {
+		t.Fatalf("failed instance state = %s, want failed", got.State)
+	}
+}
+
+func TestRestartRunningInstanceDoesNotResurrectRemoved(t *testing.T) {
+	h, r := opHub()
+	seedInstances(t, h, map[string]status.InstanceRunState{"wl_a": status.InstanceRunning})
+	startsBefore := r.startCount()
+	gate := make(chan struct{})
+	r.mu.Lock()
+	r.stopGate = gate
+	r.mu.Unlock()
+
+	// REMOVE holds the instance's opMu, blocked inside StopInstance.
+	removed := make(chan struct{})
+	go func() {
+		defer close(removed)
+		h.removeInstance(r, "wl_a")
+	}()
+	waitUntil(t, "remove to reach StopInstance", func() bool { return r.stopCount() == 1 })
+
+	type result struct {
+		restarted bool
+		err       error
+	}
+	res := make(chan result, 1)
+	go func() {
+		ok, err := h.RestartRunningInstance("wl_a")
+		res <- result{ok, err}
+	}()
+	time.Sleep(50 * time.Millisecond) // let the restart queue behind the remove
+	close(gate)
+	<-removed
+
+	got := <-res
+	if got.err != nil || got.restarted {
+		t.Fatalf("restarted=%v err=%v, want false,nil", got.restarted, got.err)
+	}
+	if r.startCount() != startsBefore {
+		t.Fatal("removed instance was started again")
+	}
+	if _, ok := instanceState(h, "wl_a"); ok {
+		t.Fatal("removed instance came back")
+	}
+}
+
+func TestRestartRunningInstanceStartError(t *testing.T) {
+	h, r := opHub()
+	seedInstances(t, h, map[string]status.InstanceRunState{"wl_a": status.InstanceRunning})
+	r.mu.Lock()
+	r.startErr = errors.New("boom")
+	r.mu.Unlock()
+
+	restarted, err := h.RestartRunningInstance("wl_a")
+
+	if restarted || err == nil || err.Error() != "boom" {
+		t.Fatalf("restarted=%v err=%v, want false,boom", restarted, err)
+	}
+}
+
+func TestRestartRunningInstanceWithoutRunner(t *testing.T) {
+	h := testHub()
+	if _, err := h.RestartRunningInstance("wl_a"); !errors.Is(err, errNoInstanceRunner) {
+		t.Fatalf("err = %v, want errNoInstanceRunner", err)
+	}
+}
+
+// waitUntil polls cond for up to 2s.
+func waitUntil(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", what)
 }

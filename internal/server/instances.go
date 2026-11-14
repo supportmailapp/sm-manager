@@ -726,3 +726,61 @@ func (h *Hub) applyRunFlag(runner InstanceRunner, e InstanceSyncEntry) error {
 	}
 	return nil
 }
+
+// RunningInstanceIDs returns, sorted, the ids of the instances whose process
+// is meant to be up: running, or starting (spawned, not registered yet). Stopped
+// and failed entries are left out, so an instance that was stopped on purpose or
+// exited with the do-not-restart code is never part of a bulk restart. Never nil.
+// Deploy takes this snapshot and re-checks each id when it gets to it.
+func (h *Hub) RunningInstanceIDs() []string {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	ids := make([]string, 0, len(h.instances))
+	for id, inst := range h.instances {
+		if inst.state == status.InstanceRunning || inst.state == status.InstanceStarting {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+// RestartRunningInstance restarts id through the same stop-then-start path as
+// RESTART_INSTANCE, but only if the entry still exists and is running or
+// starting once the instance's opMu is won. An id that was removed, stopped or
+// failed in the meantime is left alone and reported as (false, nil), so a bulk
+// restart working from an older snapshot can neither resurrect a removed instance
+// nor start one an operator stopped. An error means the stop happened but the
+// start was refused.
+func (h *Hub) RestartRunningInstance(id string) (bool, error) {
+	h.mu.RLock()
+	runner := h.instanceRunner
+	h.mu.RUnlock()
+	if runner == nil {
+		return false, errNoInstanceRunner
+	}
+
+	inst := h.lockInstance(id)
+	if inst == nil {
+		return false, nil
+	}
+	var (
+		restarted bool
+		err       error
+	)
+	func() {
+		defer inst.opMu.Unlock()
+		h.mu.RLock()
+		state := inst.state
+		h.mu.RUnlock()
+		if state != status.InstanceRunning && state != status.InstanceStarting {
+			return
+		}
+		runner.StopInstance(id)
+		if err = h.spawnLocked(runner, id); err == nil {
+			restarted = true
+		}
+	}()
+	h.instanceChanged(id)
+	return restarted, err
+}

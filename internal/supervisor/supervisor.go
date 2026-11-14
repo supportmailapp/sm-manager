@@ -42,6 +42,18 @@ type clusterKey struct {
 	cid int
 }
 
+// instanceFleet is the part of the hub's instance registry Deploy needs to bring
+// whitelabel instances onto the new generation. *server.Hub implements it; the
+// restart goes through the hub so it takes the same per-instance lock as
+// RESTART_INSTANCE.
+type instanceFleet interface {
+	// RunningInstanceIDs lists the instances that are running or starting.
+	RunningInstanceIDs() []string
+	// RestartRunningInstance stop-then-starts id if it is still running or
+	// starting; (false, nil) means it was not and was left alone.
+	RestartRunningInstance(id string) (bool, error)
+}
+
 // Supervisor owns the cluster child processes across every generation that
 // has ever existed. cfg.Generation only seeds the starting value — once Run
 // is going, generation is live runtime state bumped by Deploy, not config.
@@ -55,19 +67,24 @@ type Supervisor struct {
 	clusterCancels map[clusterKey]context.CancelFunc // per-running-cluster cancel func
 	instances      map[string]*instanceRun           // supervised instance processes, by instance id
 	instanceSink   InstanceStateSink                 // nil until wired; nil-safe
+	fleet          instanceFleet                     // the hub's instance registry; nil when built without a hub
 
 	deployMu sync.Mutex // serializes concurrent Deploy calls
 	wg       sync.WaitGroup
 }
 
 func New(cfg *config.Config, hub *server.Hub) *Supervisor {
-	return &Supervisor{
+	s := &Supervisor{
 		cfg:            cfg,
 		hub:            hub,
 		generation:     cfg.Generation,
 		clusterCancels: make(map[clusterKey]context.CancelFunc),
 		instances:      make(map[string]*instanceRun),
 	}
+	if hub != nil { // a nil *Hub inside the interface would not compare equal to nil
+		s.fleet = hub
+	}
+	return s
 }
 
 // Run spawns cfg.ClusterCount clusters under the starting generation and
@@ -150,7 +167,16 @@ func (s *Supervisor) cancelClusters(gen int, cids []int) {
 // clusterID is still served by exactly one healthy generation. There is no
 // rollback by design (reversing a cut-over cluster only churns its gateway
 // connection); recovery is forward-only — re-run Deploy. The error names where
-// it stopped.
+// it stopped. A halted roll restarts no instances.
+//
+// After the last batch has cut over, Deploy restarts every instance that is
+// running or starting, one at a time, through the same stop-then-start path as
+// RESTART_INSTANCE, so each comes back under the new generation (instances
+// are not part of the batch roll and would otherwise keep running the old
+// code). Stopped and failed instances are left as they are. A restart that
+// fails is logged and skipped over without failing Deploy; the counts
+// (restarted, failed, skipped on ctx cancellation) are in the completion log.
+// The reply therefore waits for those restarts, bounded by ctx like the rest.
 func (s *Supervisor) Deploy(ctx context.Context) (int, error) {
 	if len(s.cfg.SpawnCommand) == 0 {
 		return 0, fmt.Errorf("no spawnCommand configured — nothing to deploy")
@@ -208,11 +234,79 @@ func (s *Supervisor) Deploy(ctx context.Context) (int, error) {
 		log.Printf("deploy: batch %d/%d cut over to generation %d", i+1, len(batches), newGen)
 	}
 
-	log.Printf("deploy: cutover to generation %d complete", newGen)
-	telemetry.Logger().Info().Int("new_generation", newGen).Emit("deploy: cutover complete")
+	// The fleet is on the new generation. Instances are not part of the batch
+	// roll, so bring them over now, one at a time.
+	restarted, failed, skipped := s.restartInstances(ctx, newGen)
+
+	log.Printf("deploy: cutover to generation %d complete, instances restarted=%d failed=%d skipped=%d",
+		newGen, restarted, failed, skipped)
+	telemetry.Logger().Info().
+		Int("new_generation", newGen).
+		Int("instances_restarted", restarted).
+		Int("instances_failed", failed).
+		Int("instances_skipped", skipped).
+		Emit("deploy: cutover complete")
 	telemetry.Meter().Count("sm_manager.deploy_completed", 1,
 		sentry.WithAttributes(attribute.Int("new_generation", newGen)))
 	return newGen, nil
+}
+
+// restartInstances restarts every instance that is running or starting, one at
+// a time, so each comes back under generation newGen (the instance spawn path
+// reads the live generation). The ids are snapshotted once; each is re-checked
+// by the hub under the instance's own lock when its turn comes, so an instance
+// removed or stopped meanwhile is skipped by the hub rather than resurrected.
+//
+// A failed restart is logged and the loop goes on: the cluster roll already
+// succeeded, and one broken instance must not leave the others on old code.
+// Cancelling ctx stops the loop before the next instance; those are counted as
+// skipped and stay on the old code until their next restart. Only called after
+// a fully successful cluster roll; Deploy holds deployMu throughout. Instances
+// that were not running (stopped, failed) are not in the snapshot, so they are
+// neither started nor counted.
+func (s *Supervisor) restartInstances(ctx context.Context, newGen int) (restarted, failed, skipped int) {
+	if s.fleet == nil {
+		return 0, 0, 0
+	}
+	ids := s.fleet.RunningInstanceIDs()
+	if len(ids) == 0 {
+		return 0, 0, 0
+	}
+	log.Printf("deploy: restarting %d running instance(s) under generation %d", len(ids), newGen)
+
+	for i, id := range ids {
+		if err := ctx.Err(); err != nil {
+			skipped = len(ids) - i
+			log.Printf("deploy: instance restarts cut short (%d not restarted): %v", skipped, err)
+			telemetry.Logger().Warn().
+				Int("new_generation", newGen).
+				Int("skipped", skipped).
+				Emitf("deploy: instance restarts cut short: %v", err)
+			break
+		}
+		ok, err := s.fleet.RestartRunningInstance(id)
+		switch {
+		case err != nil:
+			failed++
+			log.Printf("deploy: restart of instance %s failed, continuing: %v", id, err)
+			telemetry.Logger().Error().
+				String("instance_id", id).
+				Int("new_generation", newGen).
+				Emitf("deploy: restart of instance %s failed: %v", id, err)
+			telemetry.Meter().Count("sm_manager.deploy_instance_restart_failed", 1,
+				sentry.WithAttributes(attribute.Int("new_generation", newGen)))
+		case ok:
+			restarted++
+			log.Printf("deploy: instance %s restarted under generation %d", id, newGen)
+		default:
+			log.Printf("deploy: instance %s no longer running, left alone", id)
+		}
+	}
+	if restarted > 0 {
+		telemetry.Meter().Count("sm_manager.deploy_instance_restarted", int64(restarted),
+			sentry.WithAttributes(attribute.Int("new_generation", newGen)))
+	}
+	return restarted, failed, skipped
 }
 
 // clusterIDs returns [0, count).

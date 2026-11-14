@@ -8,7 +8,7 @@ The manager is **bot-agnostic on purpose**. It only understands twelve structura
 
 - Unix-socket hub: cluster registry, structural-op handling, business-op allow-list gate, request/response correlation, computed guild/shard to cluster routing.
 - Process supervision: spawns cluster processes, injects the env contract, restarts crashed clusters with exponential backoff.
-- Generations and rollouts: generation tagging, readiness gating, and a live `DEPLOY` op that rolls the fleet to a new generation cluster-by-cluster in configurable batches (`deployBatchSize`). Routing flips per batch only after the new clusters are ready and before the old ones are quiesced, so there is no duplicate-routing window.
+- Generations and rollouts: generation tagging, readiness gating, and a live `DEPLOY` op that rolls the fleet to a new generation cluster-by-cluster in configurable batches (`deployBatchSize`). Routing flips per batch only after the new clusters are ready and before the old ones are quiesced, so there is no duplicate-routing window. After the last batch, running instances are restarted one at a time so they pick up the new release too.
 - Public statuspage WebSocket (`internal/status/`, separate from the Unix socket): snapshot plus health/status deltas (clusters and, in separate fields, instances), API-key gate, per-IP handshake rate-limiting and connection caps, real client IP resolved from `CF-Connecting-IP` behind Cloudflare and nginx.
 
 The status WebSocket currently authenticates with a flat API-key allow-list from config (no per-consumer keys, revocation or scopes yet).

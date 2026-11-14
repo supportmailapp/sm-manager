@@ -51,6 +51,8 @@ An **instance** is a separately supervised single-process bot, identified by an 
 
 Every cluster is tagged with the epoch (generation) it was spawned under. `DEPLOY` rolls the fleet to a new generation **cluster-by-cluster in batches of `deployBatchSize`**: per batch, spawn the new generation, wait for it to register and go healthy (`Hub.AwaitClusters`), promote routing to it (`Hub.PromoteClusters` — flips *before* quiescing, so a `clusterID` always routes to exactly one generation), then `QUIESCE` and kill the old batch. The live generation counter is mutable runtime state on `*Supervisor`, not config — `Config.Generation`/`SM_GENERATION` only seed a cold start.
 
+After the last batch has cut over, `Deploy` also restarts every running or starting instance, one at a time, through the same stop-then-start path as `RESTART_INSTANCE` (`Hub.RunningInstanceIDs` snapshot, then `Hub.RestartRunningInstance` per id, which re-checks the entry under its `opMu`), so instances pick up the new release too. Stopped and failed instances are left alone, a failed instance restart is logged without failing `DEPLOY`, and a halted roll restarts none.
+
 **No rollback on a failed batch, by design**: a batch that fails readiness halts the roll canary-style (already-cut-over batches stay on the new generation, the rest stay on the healthy old one) rather than reversing anything — these are live gateway connections, so "rolling back" a cut-over cluster would just be a second pointless reconnect. Recovery is forward-only: fix the build, re-run `DEPLOY`.
 
 ### Transport
