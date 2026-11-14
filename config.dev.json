@@ -9,7 +9,7 @@
   "shardsPerCluster": 2,
   "clusterCount": 1,
   "heartbeatTimeoutSecs": 30,
-  "deployTimeoutSecs": 120,
+  "deployTimeoutSecs": 180,
   "deployBatchSize": 1,
   "statusWsAddr": ":4000",
   "statusApiKeys": ["e7c94d34e46325bbc8aa61f5d8085dd1f832dc974f503733"],

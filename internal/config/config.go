@@ -110,7 +110,7 @@ func Load() (*Config, error) {
 		ShardsPerCluster:          1,
 		ClusterCount:              1,
 		HeartbeatTimeoutSecs:      30,
-		DeployTimeoutSecs:         120,
+		DeployTimeoutSecs:         180,
 		StatusRealIPHeader:        "CF-Connecting-IP",
 		StatusTrustedProxies:      []string{"127.0.0.1/32", "::1/128"},
 		StatusHandshakeRatePerMin: 60,

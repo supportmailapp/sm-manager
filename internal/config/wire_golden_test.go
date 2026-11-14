@@ -41,7 +41,7 @@ func TestWireGoldenExampleConfig(t *testing.T) {
 		AllowedBusinessOps:        []string{"VERIFY_GUILD_MEMBERSHIP", "GET_GUILD_USERS", "CHECK_MENTION_PERMISSIONS", "SETUP_TICKETS", "GET_FORUM_TAGS", "SET_FORUM_TAGS", "GET_GUILD_LIST", "SYNC_GUILDS_WITH_DB", "HANDLE_DM_REPORT", "", "CLOSE_ALL_TICKETS"},
 		HeartbeatTimeoutSecs:      30,
 		Generation:                0,
-		DeployTimeoutSecs:         120,
+		DeployTimeoutSecs:         180,
 		DeployBatchSize:           1,
 		StatusWSAddr:              ":4000",
 		StatusAPIKeys:             []string{"replace-me-before-prod"},
